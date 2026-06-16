@@ -275,7 +275,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("diff-review", {
     description: "Open a native review window with git diff, last commit, and all files scopes. Optional: /diff-review <base-branch>",
     handler: async (args, ctx) => {
-      const baseBranch = args[0];
+      const baseBranch = args?.trim() || undefined;
       await reviewRepository(ctx, baseBranch);
     },
   });
