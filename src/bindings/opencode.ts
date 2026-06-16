@@ -6,14 +6,13 @@
  *   1. A custom tool `diff_review` that the LLM can call.
  *   2. A `command.execute.before` hook so when the user types
  *      `/diff-review [base]` directly in the TUI, the diff window opens
- *      without an LLM round-trip and the composed feedback replaces the
- *      message that gets fed to the LLM — the same UX as the pi binding's
- *      "insert into the editor".
+ *      and the composed feedback is dropped into the chat box as a draft
+ *      for the user to review and send — matching the pi binding's
+ *      "insert into the editor" UX.
  */
 
-import type { Plugin } from "@opencode-ai/plugin";
-import { tool } from "@opencode-ai/plugin";
-import type { TextPart } from "@opencode-ai/sdk";
+import type { Plugin, PluginInput } from "@opencode-ai/plugin";
+import type { OpencodeClient } from "@opencode-ai/sdk";
 import {
 	composeReviewPrompt,
 	getReviewWindowData,
@@ -72,15 +71,24 @@ function makeExec(): Exec {
 	};
 }
 
+type ReviewFlowResult =
+	| { status: "prompt"; text: string }
+	| { status: "cancel" }
+	| { status: "empty"; reason: string };
+
 /**
  * Single source of truth for the entire review session. Used by both the
  * custom tool and the command hook so behaviour is identical regardless
  * of how the user (or the LLM) triggered diff-review.
  */
-async function runReviewFlow(exec: Exec, cwd: string, baseBranch?: string): Promise<string> {
+async function runReviewFlow(
+	exec: Exec,
+	cwd: string,
+	baseBranch?: string,
+): Promise<ReviewFlowResult> {
 	const data = await getReviewWindowData(exec, cwd, baseBranch);
 	if (data.files.length === 0) {
-		return "No reviewable files found.";
+		return { status: "empty", reason: "No reviewable files found." };
 	}
 
 	const handle = openReviewWindow(exec, data, {
@@ -92,75 +100,57 @@ async function runReviewFlow(exec: Exec, cwd: string, baseBranch?: string): Prom
 	try {
 		const message = await handle.result;
 		if (message == null || message.type === "cancel") {
-			return "Review cancelled.";
+			return { status: "cancel" };
 		}
-		return composeReviewPrompt(data.files, message);
+		return { status: "prompt", text: composeReviewPrompt(data.files, message) };
 	} finally {
 		handle.close();
 	}
 }
 
 /**
- * Generate a unique id for the synthetic TextPart we inject. Not a UUID —
- * just a session+timestamp hashed enough for opencode's part list to keep
- * us straight from any genuine user message that arrived earlier.
+ * Insert the composed review prompt into the opencode TUI chat box as a
+ * draft. The user still has to press Enter to send it.
  */
-function newPartId(sessionID: string): string {
-	return `${sessionID}-review-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+async function insertPromptIntoChatBox(
+	client: OpencodeClient,
+	directory: string,
+	prompt: string,
+): Promise<void> {
+	const query = { directory };
+	await client.tui.clearPrompt({ query });
+	await client.tui.appendPrompt({ query, body: { text: prompt } });
 }
 
-export const DiffReviewPlugin: Plugin = async () => {
+export const DiffReviewPlugin: Plugin = async (pluginInput: PluginInput) => {
 	const exec = makeExec();
+	const client = pluginInput.client;
 
 	return {
-		tool: {
-			diff_review: tool({
-				description:
-					"Open a native diff review window in a separate OS window. " +
-					"Lets the user switch between git-diff, last commit, all files, " +
-					"and individual commit scopes; draft comments per-file / per-line " +
-					"on original or modified sides; submit a single feedback prompt " +
-					"back as the tool's return value. " +
-					"Without a base branch, reviews only uncommitted working-tree " +
-					"changes vs HEAD. Pass an optional `baseBranch` (e.g. 'main', 'dev') " +
-					"to review all changes on the current branch since the merge base.",
-				args: {
-					baseBranch: tool.schema
-						.string()
-						.optional()
-						.describe("Optional base branch — reviews the feature branch against its merge base with this branch."),
-				},
-				async execute(args, ctx) {
-					return runReviewFlow(exec, ctx.directory, args.baseBranch);
-				},
-			}),
-		},
-
 		/**
 		 * opencode fires this for any slash command the TUI executes. We
-		 * narrow on `command === "diff-review"` and replace the message parts
-		 * with our composed feedback — matching the pi-binding experience of
-		 * "review ends → text lands in the editor/LLM context".
+		 * narrow on `command === "diff-review"`, open the review window, and
+		 * drop the composed feedback into the chat box as a draft. The
+		 * command's own message parts are cleared so the LLM is not called
+		 * until the user presses Enter.
 		 */
 		"command.execute.before": async (input, output) => {
 			if (input.command !== "diff-review") return;
 
 			const baseBranch = input.arguments?.trim() || undefined;
-			const reviewResult = await runReviewFlow(exec, process.cwd(), baseBranch);
+			const result = await runReviewFlow(exec, pluginInput.directory, baseBranch);
 
-			// Build a fresh TextPart that satisfies the SDK's runtime shape.
-			// opencode reads `id, sessionID, messageID` back when rendering the
-			// part in chat, so we provide unique values per invocation.
-			const part: TextPart = {
-				id: newPartId(input.sessionID),
-				sessionID: input.sessionID,
-				messageID: newPartId(input.sessionID),
-				type: "text",
-				text: reviewResult,
-			};
+			if (result.status === "prompt") {
+				await insertPromptIntoChatBox(client, pluginInput.directory, result.text);
+			}
 
-			output.parts.length = 0;
-			output.parts.push(part);
+			// Prevent the slash command from sending a message automatically.
+			output.parts = [];
+
+			// Abort the LLM call. In opencode v1.3.0 there is no clean
+			// way to prevent the command from calling the LLM after the hook.
+			// Throwing short-circuits the execution and prevents any LLM call.
+			throw new Error("__DIFF_REVIEW_ABORT__");
 		},
 	};
 };

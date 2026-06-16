@@ -129,7 +129,7 @@ The package is split into three layers:
 
 - `src/core/` — agent-agnostic. The git pipeline (`Exec` is injected, not pulled from any specific runtime), prompt composer, HTML builder, and the window orchestrator. No `pi-coding-agent`, `pi-tui`, or `@opencode-ai/*` imports.
 - `src/bindings/pi.ts` — thin pi-specific adapter. Registers the `/diff-review` command, draws the "Waiting for review" TUI panel, races the escape key against the window result, and inserts the composed feedback into the editor.
-- `src/bindings/opencode.ts` — thin opencode-specific adapter. Defines a custom tool (`diff_review`) the LLM can call and hooks `command.execute.before` so the user can type `/diff-review [base]` directly in the TUI. In both paths the composed feedback replaces the message that gets sent to the LLM, matching the pi-binding's "insert into the editor" UX.
+- `src/bindings/opencode.ts` — thin opencode-specific adapter. Defines a custom tool (`diff_review`) the LLM can call and hooks `command.execute.before` so the user can type `/diff-review [base]` directly in the TUI. The slash-command path inserts the composed feedback into the chat box as a draft, matching the pi-binding's "insert into the editor" UX.
 
 Any other agentic tool (Claude Code, Codex, …) can drop in its own binding alongside by importing from `src/core/index.js` and supplying its own `Exec` implementation. `src/index.ts` is a barrel re-exporting the core for direct consumers.
 
@@ -151,7 +151,7 @@ To run the opencode binding locally in this folder:
 What happens:
 
 - opencode discovers `.opencode/plugins/diff-review.ts` → re-exports `DiffReviewPlugin` from `../../src/bindings/opencode.js`.
-- The plugin's `command.execute.before` hook fires for `diff-review`, opens the native Glimpse window via `core/`, awaits the user's submit/cancel, then **replaces** the message parts that opencode would have sent to the LLM with the composed feedback prompt.
+- The plugin's `command.execute.before` hook fires for `diff-review`, opens the native Glimpse window via `core/`, awaits the user's submit/cancel, then **inserts** the composed feedback prompt into the opencode chat box as a draft. Press Enter to send it to the LLM.
 - If you instead let the LLM call the `diff_review` tool directly (e.g. “please review my diff”), the same flow runs but through the custom-tool path.
 
 To publish:
@@ -203,7 +203,7 @@ The original was a single pi-coupled module. This fork reorganises it so the dif
 - `src/core/{types,prompt,ui,wsl-glimpse}.ts` — moved as-is (already pi-free)
 - `src/core/index.ts` — public API barrel
 - `src/bindings/pi.ts` — slim pi adapter (was `src/index.ts`); only file in the repo that imports `@earendil-works/pi-coding-agent` / `@earendil-works/pi-tui`
-- `src/bindings/opencode.ts` — slim opencode adapter. Defines a custom `diff_review` tool and hooks `command.execute.before` so a `/diff-review` slash command intercepts the LLM round-trip and replaces the message parts with the composed feedback
+- `src/bindings/opencode.ts` — slim opencode adapter. Defines a custom `diff_review` tool and hooks `command.execute.before` so a `/diff-review` slash command opens the review window and inserts the composed feedback into the chat box as a draft
 - `.opencode/plugins/diff-review.ts` — opencode's loader entry; thin re-export of the binding
 - `.opencode/commands/diff-review.md` — slash command the user types
 - `src/index.ts` — root barrel re-exporting the core for direct consumers
