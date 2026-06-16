@@ -118,10 +118,19 @@ This package is already configured to be a pi package:
   "name": "pi-diff-review-wsl",
   "keywords": ["pi-package"],
   "pi": {
-    "extensions": ["./src/index.ts"]
+    "extensions": ["./src/bindings/pi.ts"]
   }
 }
 ```
+
+## Architecture
+
+The package is split into two layers:
+
+- `src/core/` — agent-agnostic. The git pipeline (`Exec` is injected, not pulled from any specific runtime), prompt composer, HTML builder, and the window orchestrator. No `pi-coding-agent` or `pi-tui` imports.
+- `src/bindings/pi.ts` — thin pi-specific adapter. Registers the `/diff-review` command, draws the "Waiting for review" TUI panel, races the escape key against the window result, and inserts the composed feedback into the editor.
+
+Any other agentic tool (Claude Code, OpenCode, Codex, …) can drop in its own binding alongside by importing from `src/core/index.js` and supplying its own `Exec` implementation. `src/index.ts` is a barrel re-exporting the core for direct consumers.
 
 To publish:
 
@@ -162,6 +171,18 @@ If the flicker is still annoying, you can experiment with the `placeholder` stri
 - `src/types.ts` — added `ReviewWindowData` interface
 - `package.json` — renamed, made publishable, removed `private: true`
 - `README.md` — this file
+
+## Refactor vs the original `pi-diff-review`
+
+The original was a single pi-coupled module. This fork reorganises it so the diff-review domain is reusable across agentic coding tools:
+
+- `src/core/git.ts` — git pipeline takes an injected `Exec` (mirrors `@earendil-works/pi-coding-agent`'s shape, so pi drops in directly) instead of depending on `ExtensionAPI`
+- `src/core/review-window.ts` — owns the message protocol (open window, lazy-load on `request-file`, settle on submit/cancel/closed) and exposes `{ result, close }` so bindings can race cancellation
+- `src/core/{types,prompt,ui,wsl-glimpse}.ts` — moved as-is (already pi-free)
+- `src/core/index.ts` — public API barrel
+- `src/bindings/pi.ts` — slim pi adapter (was `src/index.ts`); only file in the repo that imports `@earendil-works/pi-coding-agent` / `@earendil-works/pi-tui`
+- `src/index.ts` — root barrel re-exporting the core for direct consumers
+- `package.json` — `pi.extensions` now points at `./src/bindings/pi.ts`
 
 ## License
 

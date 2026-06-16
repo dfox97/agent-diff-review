@@ -14,7 +14,7 @@
   },
   "pi": {
     "extensions": [
-      "./src/index.ts"
+      "./src/bindings/pi.ts"
     ]
   },
   "dependencies": {
