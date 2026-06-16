@@ -5,6 +5,7 @@ A WSL2-adapted fork of [pi-diff-review](https://github.com/badlogic/pi-diff-revi
 Adds a `/diff-review` command to [pi](https://pi.dev) that opens a native diff review window. The original extension works on macOS, Linux, and Windows. This fork specifically handles the **WSL2 + Windows** case where the pi agent runs in WSL2 but the native window must render on the Windows desktop via WebView2.
 
 ## What it does
+<img width="800" height="435" alt="Recording2026-06-15164816-ezgif com-optimize" src="https://github.com/user-attachments/assets/e3fad66f-230c-414c-aa93-19bcaad2a232" />
 
 Same as the original:
 
