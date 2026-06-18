@@ -1,0 +1,36 @@
+#!/usr/bin/env node
+import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const builtPath = join(__dirname, "..", "dist", "bindings", "cli.js");
+const args = process.argv.slice(2);
+
+function run(nodeArgs) {
+	const result = spawnSync(process.execPath, [...nodeArgs, ...args], {
+		stdio: "inherit",
+		env: process.env,
+	});
+	process.exit(result.status ?? 0);
+}
+
+if (existsSync(builtPath)) {
+	run([builtPath]);
+}
+
+// Fallback: run the TypeScript source directly via tsx (development / local use).
+const require = createRequire(import.meta.url);
+let tsxPath;
+try {
+	tsxPath = require.resolve("tsx");
+} catch (err) {
+	console.error("diff-review: built output not found and tsx is not installed.", err);
+	console.error("Run `npm install` to use the tsx fallback, or `npm run build` to compile.");
+	process.exit(1);
+}
+
+const sourcePath = join(__dirname, "..", "src", "bindings", "cli.ts");
+run(["--import", tsxPath, sourcePath]);

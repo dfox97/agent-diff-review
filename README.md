@@ -5,6 +5,7 @@ A WSL2-adapted fork of [pi-diff-review](https://github.com/badlogic/pi-diff-revi
 Adds a `/diff-review` command to [pi](https://pi.dev) that opens a native diff review window. The original extension works on macOS, Linux, and Windows. This fork specifically handles the **WSL2 + Windows** case where the pi agent runs in WSL2 but the native window must render on the Windows desktop via WebView2.
 
 ## What it does
+
 <img width="800" height="435" alt="Recording2026-06-15164816-ezgif com-optimize" src="https://github.com/user-attachments/assets/e3fad66f-230c-414c-aa93-19bcaad2a232" />
 
 Same as the original:
@@ -93,9 +94,42 @@ Inside a git repository in pi:
 
 A native Windows window opens with the diff review UI.
 
-### Reviewing against a specific base branch
+## Standalone CLI
 
-By default, `/diff-review` shows only uncommitted changes on the current branch (working tree vs `HEAD`).
+You can also run diff-review directly from your normal shell, outside of any AI agent. The composed feedback is copied to your clipboard on submit instead of being inserted into an editor or chat box.
+
+### Run locally from this repo
+
+```bash
+cd /home/danny/personal/projects/pi-diff-review-wsl
+npm install       # installs tsx for the dev fallback
+./bin/diff-review [base-branch]
+```
+
+### Install the command as `diff-review`
+
+```bash
+cd /home/danny/personal/projects/pi-diff-review-wsl
+npm run build     # compile the CLI to dist/
+npm link          # makes `diff-review` available globally
+diff-review [base-branch]
+```
+
+To type `/diff-review` literally in your shell, add an alias to your shell config (e.g. `~/.bashrc` or `~/.zshrc`):
+
+```bash
+alias /diff-review=diff-review
+```
+
+### Clipboard requirements
+
+- **WSL2 / Windows**: `clip.exe` or PowerShell is used automatically.
+- **macOS**: `pbcopy` is built-in.
+- **Linux**: install one of `xclip`, `wl-copy` (Wayland), or `xsel`. The CLI tries them in that order.
+
+## Reviewing against a specific base branch
+
+By default, `diff-review` (or `/diff-review` in pi/opencode) shows only uncommitted changes on the current branch (working tree vs `HEAD`).
 
 If you want to review the entire feature branch against a different base branch (e.g., `dev` or `main`), pass it as an argument:
 
@@ -206,9 +240,17 @@ The original was a single pi-coupled module. This fork reorganises it so the dif
 - `src/bindings/opencode.ts` — slim opencode adapter. Defines a custom `diff_review` tool and hooks `command.execute.before` so a `/diff-review` slash command opens the review window and inserts the composed feedback into the chat box as a draft
 - `.opencode/plugins/diff-review.ts` — opencode's loader entry; thin re-export of the binding
 - `.opencode/commands/diff-review.md` — slash command the user types
+- `src/bindings/cli.ts` — standalone shell adapter. Opens the review window and copies the composed feedback to the clipboard on submit; no AI agent required
+- `bin/diff-review` — executable entry point that uses the compiled `dist` output if available, otherwise falls back to `tsx` for local development
 - `src/index.ts` — root barrel re-exporting the core for direct consumers
-- `package.json` — `pi.extensions` now points at `./src/bindings/pi.ts`; `@opencode-ai/plugin` + `@opencode-ai/sdk` + `@types/bun` are devDeps for typechecking the opencode binding
+- `package.json` — `pi.extensions` now points at `./src/bindings/pi.ts`; `@opencode-ai/plugin` + `@opencode-ai/sdk` + `@types/bun` are devDeps for typechecking the opencode binding; `bin` points at `./bin/diff-review`
 
 ## License
 
 Same as the original project.
+
+cli setup:
+npm run build # creates dist/ so the bin can use compiled JS
+npm link # symlinks `diff-review` into your global npm bin path
+
+diff-review
