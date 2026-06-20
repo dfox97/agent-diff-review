@@ -1,8 +1,9 @@
 import { EventEmitter } from "node:events";
 import { spawn, spawnSync } from "node:child_process";
 import { createInterface } from "node:readline";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import { open as nativeOpen } from "glimpseui";
 
 export type { GlimpseInfo, GlimpseOpenOptions, GlimpseWindow } from "glimpseui";
@@ -343,12 +344,80 @@ function openWSL(html: string, options?: import("glimpseui").GlimpseOpenOptions)
   return new WSLGlimpseWindow(proc, tempDir);
 }
 
+function findCachedChromium(): string | null {
+  const cacheDir = join(homedir(), ".cache", "pi-diff-review", "chromium");
+  if (!existsSync(cacheDir)) return null;
+
+  try {
+    const revisions = readdirSync(cacheDir).filter((d) => d.startsWith("linux-"));
+    if (revisions.length === 0) return null;
+
+    // Use the latest revision (highest numbered)
+    const latest = revisions.sort().pop()!;
+    const chromePath = join(cacheDir, latest, "chrome-linux", "chrome");
+    if (existsSync(chromePath)) return chromePath;
+  } catch {}
+
+  return null;
+}
+
+function downloadChromium(): string | null {
+  const cacheDir = join(homedir(), ".cache", "pi-diff-review");
+  mkdirSync(cacheDir, { recursive: true });
+
+  console.error("[diff-review] Chromium not found. Downloading...");
+  const result = spawnSync(
+    "npx",
+    ["-y", "@puppeteer/browsers", "install", "chromium@latest", "--path", cacheDir],
+    { stdio: "inherit", timeout: 300000 },
+  );
+
+  if (result.status !== 0) {
+    console.error("[diff-review] Failed to download Chromium.");
+    return null;
+  }
+
+  return findCachedChromium();
+}
+
+function ensureLinuxChromiumAvailable(): void {
+  // Already configured
+  if (process.env.GLIMPSE_CHROME_PATH) return;
+  // Native glimpse binary takes precedence
+  if (process.env.GLIMPSE_BACKEND === "native") return;
+
+  // Check for system Chromium
+  const candidates = ["chromium", "chromium-browser", "google-chrome-stable", "google-chrome", "chrome"];
+  for (const cmd of candidates) {
+    const result = spawnSync("which", [cmd], { stdio: "ignore" });
+    if (result.status === 0) return;
+  }
+
+  // Check for cached Chromium
+  const cached = findCachedChromium();
+  if (cached) {
+    process.env.GLIMPSE_CHROME_PATH = cached;
+    return;
+  }
+
+  // Download Chromium
+  const downloaded = downloadChromium();
+  if (downloaded) {
+    process.env.GLIMPSE_CHROME_PATH = downloaded;
+  }
+}
+
 export function open(
   html: string,
   options?: import("glimpseui").GlimpseOpenOptions,
 ): import("glimpseui").GlimpseWindow {
   if (isWSL()) {
     return openWSL(html, options) as unknown as import("glimpseui").GlimpseWindow;
+  }
+
+  // On native Linux, ensure Chromium is available (download if needed)
+  if (process.platform === "linux") {
+    ensureLinuxChromiumAvailable();
   }
 
   return nativeOpen(html, options);

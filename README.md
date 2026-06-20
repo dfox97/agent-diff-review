@@ -33,19 +33,86 @@ When not running in WSL2, the wrapper re-exports `glimpseui` directly, so the be
 
 ## Prerequisites
 
-- WSL2 with a Linux distro
-- Windows Node.js installed, typically at `C:\Program Files\nodejs\node.exe`
-- Windows .NET 8 SDK or newer (required for the `glimpseui` postinstall Windows build)
-- WebView2 Runtime (pre-installed on Windows 10/11)
-- Git repository in the current project
-- Internet access for the Tailwind and Monaco CDNs used by the review window
+All platforms require:
+- A **git repository** in the current working directory
+- **Internet access** (the review UI loads Tailwind CSS and Monaco Editor from CDNs)
 
-Check from WSL2:
+Platform-specific requirements below.
+
+---
+
+### Native Linux (Fedora, Ubuntu, Arch, etc.)
+
+The extension uses [glimpseui](https://github.com/nickvdyck/glimpseui)'s Chromium CDP backend on native Linux.
+
+| Dependency | Required? | Notes |
+|---|---|---|
+| **Chromium** | Yes | Auto-downloaded to `~/.cache/pi-diff-review/chromium/` on first run if not found on `PATH`. You can also install it system-wide. |
+| **xdotool** | Recommended | Used for window positioning, floating, and focus management. Without it the window still opens but may not position correctly. |
+
+**Option A — Let it auto-download (zero setup):**
+
+Just run `/diff-review`. If no system Chromium is found, the extension downloads one automatically via `@puppeteer/browsers` to `~/.cache/pi-diff-review/`. This only happens once.
+
+**Option B — Install system Chromium + xdotool:**
 
 ```bash
-powershell.exe -Command "node --version"
-powershell.exe -Command "dotnet --list-sdks"
+# Fedora
+sudo dnf install -y chromium xdotool
+
+# Ubuntu / Debian
+sudo apt install -y chromium-browser xdotool
+
+# Arch
+sudo pacman -S chromium xdotool
 ```
+
+**Option C — Point to a custom Chromium binary:**
+
+```bash
+export GLIMPSE_CHROME_PATH=/path/to/your/chrome-or-chromium
+```
+
+**Verify it works:**
+
+```bash
+which chromium || echo "Will auto-download on first run"
+which xdotool || echo "Window positioning may be limited"
+```
+
+---
+
+### WSL2 (Windows Subsystem for Linux)
+
+The extension detects WSL2 at runtime and routes the window through Windows Node.js + WebView2 so it renders natively on the Windows desktop.
+
+| Dependency | Where | How to check |
+|---|---|---|
+| **Node.js for Windows** | `C:\Program Files\nodejs\node.exe` | `powershell.exe -Command "node --version"` |
+| **.NET 8 SDK** (or newer) | Windows | `powershell.exe -Command "dotnet --list-sdks"` |
+| **WebView2 Runtime** | Windows | Pre-installed on Windows 10/11 |
+
+**Install missing dependencies:**
+
+1. **Node.js for Windows** — Download from <https://nodejs.org> and install for Windows (not the WSL Linux version). Verify from WSL:
+   ```bash
+   powershell.exe -Command "node --version"
+   ```
+
+2. **.NET 8 SDK** — Download from <https://dotnet.microsoft.com/download/dotnet/8.0> and install for Windows. The `glimpseui` postinstall script uses it to build the native Windows host. Verify from WSL:
+   ```bash
+   powershell.exe -Command "dotnet --list-sdks"
+   ```
+
+3. **WebView2 Runtime** — Already present on Windows 10 (Chromium-based) and Windows 11. If missing, install from <https://developer.microsoft.com/en-us/microsoft-edge/webview2/>.
+
+**First-run note:** The first time you run `/diff-review` in WSL2, the wrapper installs `glimpseui` into `C:\temp\pi-wsl-glimpse` using the Windows npm. This builds the Windows native host and may take 30–60 seconds. Subsequent runs are fast.
+
+---
+
+### macOS
+
+The extension uses glimpseui's native Swift/WebKit backend. No extra dependencies — just install and run.
 
 ## Install
 
