@@ -2,8 +2,20 @@
 
 Adds a `/diff-review` command to [pi](https://pi.dev) that opens a native diff review window. The original extension works on macOS, Linux, and Windows. This fork specifically handles the **WSL2 + Windows** case where the pi agent runs in WSL2 but the native window must render on the Windows desktop via WebView2.
 
-## Currently:
-Usable with pi, opencode and supports cli command `/diff-review` so any comments made during feedback get saved to clipboard, you can then paste them into your agent editor or your choice, works well with claude code this way. 
+## Supported runtimes
+
+This fork works in three ways. In all of them the composed feedback is collected from the native review window and handed back to your editor or clipboard.
+
+- **pi** — install the extension, then type `/diff-review` in the pi editor. The composed feedback is inserted directly into the editor. See [Install](#install) and [Usage](#usage).
+- **opencode** — from the repo root, run `opencode` and type `/diff-review` (or `/diff-review <base>`) in the TUI. The composed feedback is inserted into the chat box as a draft. See [opencode support](#opencode-support).
+- **Standalone CLI** — run outside any AI agent. The composed feedback is copied to your clipboard so you can paste it into any editor (Claude Code, Cursor, etc.). See [Standalone CLI](#standalone-cli).
+
+```bash
+# CLI quick start (from this repo)
+npm install && npm run build && npm link
+diff-review            # review uncommitted changes
+diff-review dev        # review current branch against base branch `dev`
+```
 
 ## What it does
 
