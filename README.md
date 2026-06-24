@@ -4,51 +4,59 @@ Adds a `/diff-review` command to [pi](https://pi.dev) that opens a native diff r
 
 ## Supported runtimes
 
-This fork works in three ways. In all of them the composed feedback is collected from the native review window and handed back to your editor or clipboard.
+This fork works in three ways. In all of them the composed feedback is collected from the native review window and handed back to your editor, chat box, clipboard, or stdout.
 
 - **pi** — install the extension, then type `/diff-review` in the pi editor. The composed feedback is inserted directly into the editor. See [Install](#install) and [Usage](#usage).
 - **opencode** — from the repo root, run `opencode` and type `/diff-review` (or `/diff-review <base>`) in the TUI. The composed feedback is inserted into the chat box as a draft. See [opencode support](#opencode-support).
-- **Standalone CLI** — run outside any AI agent. The composed feedback is copied to your clipboard so you can paste it into any editor (Claude Code, Cursor, etc.). See [Standalone CLI](#standalone-cli).
+- **Standalone CLI** — run outside any AI agent. `diff-review clip` copies the prompt to your clipboard; `diff-review open` writes it to stdout for an agent harness to ingest. See [Standalone CLI](#standalone-cli).
 
 ```bash
 # CLI quick start (from this repo)
 npm install && npm run build && npm link
-diff-review            # review uncommitted changes
-diff-review dev        # review current branch against base branch `dev`
+diff-review clip              # review uncommitted changes; copy prompt to clipboard
+diff-review open --base dev   # agent mode: prompt on stdout, exit 0 only on submit-with-content
 ```
 
 ## What it does
 
-<img width="800" height="435" alt="Recording2026-06-15164816-ezgif com-optimize" src="https://github.com/user-attachments/assets/e3fad66f-230c-414c-aa93-19bcaad2a232" />
-
-Same as the original:
-
 - Opens a native review window
-- Lets you switch between `git diff`, `last commit`, and `all files` scopes
+- Lets you switch between `git diff`, `last commit`, `commit`, and `all files` scopes
 - Shows a collapsible sidebar with fuzzy file search
 - Shows git status markers in the sidebar
-- Lazy-loads file contents on demand
+- Lazy-loads file contents on demand (with an LRU cache + next-file prefetch)
 - Lets you draft comments on the original, modified, or file level
-- Inserts the resulting feedback prompt into the pi editor on submit
+- Hands the resulting feedback prompt back to the host (editor / chat box / clipboard / stdout)
+
+## Pure human-input device (behavioral spec)
+
+**The tool never triggers an LLM.** It is a pure human-input device: it produces a *draft* prompt for the human, and every binding must be able to abort the slash-command's default LLM trigger.
+
+- **Submit with content** → the composed markdown prompt is delivered (editor insertion / chat-box draft / clipboard / stdout) and the command proceeds.
+- **Cancel, close, or submit-empty** → no prompt is produced and **no LLM call is made** in any binding.
+  - pi: returns early from the command handler before any model call.
+  - opencode: throws `__DIFF_REVIEW_ABORT__` from `command.execute.before` to short-circuit the command's automatic LLM call (`TODO: replace with a clean abort when opencode exposes one`).
+  - CLI `open`: writes nothing to stdout and exits non-zero.
 
 ## How it works on WSL2
 
 The original extension imports `glimpseui` directly, which on WSL2 tries to use the Linux backend. In many WSL2 setups the Linux backend cannot open a stable window.
 
-This fork adds a tiny wrapper (`src/wsl-glimpse.ts`) that:
+This fork ships a platform shim (`src/platform/wsl-glimpse.ts`) that:
 
 1. Detects WSL2 at runtime.
 2. When running in WSL2, it installs `glimpseui` into a Windows directory (`C:\temp\pi-wsl-glimpse`) if it is not already there.
 3. Spawns a Windows `node.exe` process that opens the Glimpse window using the native Windows WebView2 backend.
 4. Streams the Glimpse JSON Lines protocol over stdin/stdout between the WSL2 extension and the Windows host.
 
-When not running in WSL2, the wrapper re-exports `glimpseui` directly, so the behavior on macOS, Linux, and native Windows is unchanged.
+When not running in WSL2, the shim re-exports `glimpseui` directly, so the behavior on macOS, Linux, and native Windows is unchanged.
+
+> The shim is **frozen** for this refactor — no new features. A separate, deferred effort is to upstream (or fork) the taskbar fix + `loadFile`-over-`NavigateToString` into glimpseui, after which `platform/wsl-glimpse.ts` can shrink to a one-line `glimpse.open()`.
 
 ## Prerequisites
 
 All platforms require:
 - A **git repository** in the current working directory
-- **Internet access** (the review UI loads Tailwind CSS and Monaco Editor from CDNs)
+- **No internet access required** — the review UI ships vendored Tailwind + Monaco in `web/vendor/` and runs fully offline.
 
 Platform-specific requirements below.
 
@@ -63,19 +71,15 @@ The extension uses [glimpseui](https://github.com/nickvdyck/glimpseui)'s Chromiu
 | **Chromium** | Yes | Auto-downloaded to `~/.cache/pi-diff-review/chromium/` on first run if not found on `PATH`. You can also install it system-wide. |
 | **xdotool** | Recommended | Used for window positioning, floating, and focus management. Without it the window still opens but may not position correctly. |
 
-**Option A — Let it auto-download (zero setup):**
-
-Just run `/diff-review`. If no system Chromium is found, the extension downloads one automatically via `@puppeteer/browsers` to `~/.cache/pi-diff-review/`. This only happens once.
+**Option A — Let it auto-download (zero setup):** just run `/diff-review`.
 
 **Option B — Install system Chromium + xdotool:**
 
 ```bash
 # Fedora
 sudo dnf install -y chromium xdotool
-
 # Ubuntu / Debian
 sudo apt install -y chromium-browser xdotool
-
 # Arch
 sudo pacman -S chromium xdotool
 ```
@@ -84,13 +88,6 @@ sudo pacman -S chromium xdotool
 
 ```bash
 export GLIMPSE_CHROME_PATH=/path/to/your/chrome-or-chromium
-```
-
-**Verify it works:**
-
-```bash
-which chromium || echo "Will auto-download on first run"
-which xdotool || echo "Window positioning may be limited"
 ```
 
 ---
@@ -107,62 +104,33 @@ The extension detects WSL2 at runtime and routes the window through Windows Node
 
 **Install missing dependencies:**
 
-1. **Node.js for Windows** — Download from <https://nodejs.org> and install for Windows (not the WSL Linux version). Verify from WSL:
-   ```bash
-   powershell.exe -Command "node --version"
-   ```
+1. **Node.js for Windows** — <https://nodejs.org> (the Windows build, not the WSL Linux version).
+2. **.NET 8 SDK** — <https://dotnet.microsoft.com/download/dotnet/8.0>.
+3. **WebView2 Runtime** — already present on Windows 10/11.
 
-2. **.NET 8 SDK** — Download from <https://dotnet.microsoft.com/download/dotnet/8.0> and install for Windows. The `glimpseui` postinstall script uses it to build the native Windows host. Verify from WSL:
-   ```bash
-   powershell.exe -Command "dotnet --list-sdks"
-   ```
-
-3. **WebView2 Runtime** — Already present on Windows 10 (Chromium-based) and Windows 11. If missing, install from <https://developer.microsoft.com/en-us/microsoft-edge/webview2/>.
-
-**First-run note:** The first time you run `/diff-review` in WSL2, the wrapper installs `glimpseui` into `C:\temp\pi-wsl-glimpse` using the Windows npm. This builds the Windows native host and may take 30–60 seconds. Subsequent runs are fast.
+**First-run note:** the first `/diff-review` in WSL2 installs `glimpseui` into `C:\temp\pi-wsl-glimpse` and builds the Windows native host (30–60s). Subsequent runs are fast.
 
 ---
 
 ### macOS
 
-The extension uses glimpseui's native Swift/WebKit backend. No extra dependencies — just install and run.
+Uses glimpseui's native Swift/WebKit backend. No extra dependencies — just install and run.
 
 ## Install
 
-> **Important:** Do not install this alongside the original `pi-diff-review`. Both extensions register the `/diff-review` command, so they will conflict. Use this WSL2 fork instead if you are working inside WSL2.
-
-### Option A: Install directly in pi
+> **Important:** Do not install this alongside the original `pi-diff-review`. Both register the `/diff-review` command and will conflict.
 
 ```bash
 pi install git:https://github.com/YOUR_USERNAME/pi-diff-review-wsl
-```
-
-(Replace `YOUR_USERNAME` with your GitHub user after publishing.)
-
-### Option B: Install locally from this folder
-
-```bash
-cd /home/danny/personal/projects/pi-diff-review-wsl
+# or locally:
 pi install .
 ```
 
-### Option C: Use as a local project extension
-
-```bash
-pi install /home/danny/personal/projects/pi-diff-review-wsl
-```
-
-> The local copy in `/home/danny/personal/projects/pi-diff-review-wsl` is **not active** until you run one of the install commands above.
-
-### Replacing the original extension
-
-If you previously installed the original `pi-diff-review`, remove it first:
+If you previously installed the original, remove it first:
 
 ```bash
 pi remove git:https://github.com/badlogic/pi-diff-review
 ```
-
-Then install this WSL2 version.
 
 ## Usage
 
@@ -170,38 +138,33 @@ Inside a git repository in pi:
 
 ```
 /diff-review
+/diff-review dev        # review current branch against base branch `dev`
 ```
-
-A native Windows window opens with the diff review UI.
 
 ## Standalone CLI
 
-You can also run diff-review directly from your normal shell, outside of any AI agent. The composed feedback is copied to your clipboard on submit instead of being inserted into an editor or chat box.
+Run diff-review directly from your shell, outside any AI agent.
 
-### Run locally from this repo
+### Subcommands
+
+- `diff-review clip [--base <branch>]` — **human mode (default).** Opens the window; on submit copies the prompt to the clipboard. Cancel/close just prints "cancelled".
+- `diff-review open [--base <branch>] [--out <path>]` — **agent mode.** Opens the window; on submit-with-content writes the raw markdown prompt to stdout (or `--out <path>`) and exits `0`. On cancel/close/empty/error writes **nothing** to stdout, logs to stderr, and exits **non-zero**. Never calls an LLM.
+
+`--base` replaces the old positional branch argument.
+
+### Run locally / install globally
 
 ```bash
 cd /home/danny/personal/projects/pi-diff-review-wsl
-npm install       # installs tsx for the dev fallback
-./bin/diff-review [base-branch]
-```
-
-### Install the command as `diff-review`
-
-```bash
-cd /home/danny/personal/projects/pi-diff-review-wsl
-npm run build     # compile the CLI to dist/
+npm install
+npm run build     # compile to dist/
 npm link          # makes `diff-review` available globally
-diff-review [base-branch]
+
+diff-review clip --base main
+diff-review open --base main --out /tmp/review.md
 ```
 
-To type `/diff-review` literally in your shell, add an alias to your shell config (e.g. `~/.bashrc` or `~/.zshrc`):
-
-```bash
-alias /diff-review=diff-review
-```
-
-### Clipboard requirements
+### Clipboard requirements (clip mode)
 
 - **WSL2 / Windows**: `clip.exe` or PowerShell is used automatically.
 - **macOS**: `pbcopy` is built-in.
@@ -209,121 +172,123 @@ alias /diff-review=diff-review
 
 ## Reviewing against a specific base branch
 
-By default, `diff-review` (or `/diff-review` in pi/opencode) shows only uncommitted changes on the current branch (working tree vs `HEAD`).
+By default, `diff-review` shows only uncommitted changes on the current branch (working tree vs `HEAD`).
 
-If you want to review the entire feature branch against a different base branch (e.g., `dev` or `main`), pass it as an argument:
+To review the entire feature branch against a different base branch (e.g. `dev` or `main`):
 
 ```
-/diff-review dev
+/diff-review dev          # pi / opencode
+diff-review open --base dev   # CLI
 ```
 
 This compares `HEAD` against the merge base of `dev` and shows all commits and files introduced on the feature branch.
-
-## First-run note
-
-The first time you run `/diff-review` in WSL2, the wrapper installs `glimpseui` into `C:\temp\pi-wsl-glimpse` using the Windows npm. This builds the Windows native host and may take 30–60 seconds. Subsequent runs are fast.
-
-## Packaging as a pi extension
-
-This package is already configured to be a pi package:
-
-```json
-{
-  "name": "pi-diff-review-wsl",
-  "keywords": ["pi-package"],
-  "pi": {
-    "extensions": ["./src/bindings/pi.ts"]
-  }
-}
-```
 
 ## Architecture
 
 The package is split into three layers:
 
-- `src/core/` — agent-agnostic. The git pipeline (`Exec` is injected, not pulled from any specific runtime), prompt composer, HTML builder, and the window orchestrator. No `pi-coding-agent`, `pi-tui`, or `@opencode-ai/*` imports.
-- `src/bindings/pi.ts` — thin pi-specific adapter. Registers the `/diff-review` command, draws the "Waiting for review" TUI panel, races the escape key against the window result, and inserts the composed feedback into the editor.
-- `src/bindings/opencode.ts` — thin opencode-specific adapter. Defines a custom tool (`diff_review`) the LLM can call and hooks `command.execute.before` so the user can type `/diff-review [base]` directly in the TUI. The slash-command path inserts the composed feedback into the chat box as a draft, matching the pi-binding's "insert into the editor" UX.
+- `src/core/` — agent-agnostic. The git pipeline (`Exec` is injected, not pulled from any specific runtime), prompt composer, window orchestrator, and wire protocol. No `pi-coding-agent`, `pi-tui`, or `@opencode-ai/*` imports.
+- `src/platform/` — platform shim. `wsl-glimpse.ts` (frozen) wraps glimpse for WSL2; `resolve-web-dir.ts` locates the packaged `web/` directory in both source and `dist` layouts and produces a webview-loadable path (UNC on WSL, plain path elsewhere).
+- `src/bindings/{pi,opencode,cli}.ts` — thin host-specific adapters. Only these files import host SDKs.
 
-Any other agentic tool (Claude Code, Codex, …) can drop in its own binding alongside by importing from `src/core/index.js` and supplying its own `Exec` implementation. `src/index.ts` is a barrel re-exporting the core for direct consumers.
+Any other agentic tool (Claude Code, Codex, …) can drop in its own binding by importing from `src/core/index.js` and supplying its own `Exec`. `src/index.ts` is a barrel re-exporting the core for direct consumers.
+
+### Module layout
+
+```
+src/
+  index.ts                      # root barrel
+  core/
+    index.ts                    # public API barrel
+    types.ts                    # domain + wire-protocol types
+    prompt.ts                   # composeReviewPrompt
+    git/
+      types.ts                  # Exec / ExecOptions / ExecResult contract
+      repo.ts                   # getRepoRoot, hasHead, resolveBranch, getMergeBase, runGit
+      parse.ts                  # parseNameStatus, parseCommitLog, parseCommitLogWithNameStatus (pure)
+      contents.ts               # loadReviewFileContents + LRU cache + prefetch
+      index.ts                  # getReviewWindowData (the pipeline; one git log --name-status)
+    window/
+      protocol.ts               # handshake + message type guards
+      orchestrator.ts           # openReviewWindow / openReviewWindowWithData + {data, result, close}
+    ui.ts                       # buildPlaceholderHtml (real page loaded via loadFile)
+  platform/
+    wsl-glimpse.ts              # FROZEN — WSL2 detection + Windows routing
+    resolve-web-dir.ts          # resolveWebDir() / resolveLoadFilePath()
+  bindings/
+    pi.ts                       # pi adapter
+    opencode.ts                 # opencode adapter (keeps abort hack w/ TODO)
+    cli.ts                      # CLI: open (agent stdout) + clip (human clipboard)
+web/
+  index.html                    # references ./vendor/* relatively; data via channel
+  app.js                        # sectioned, no build step
+  vendor/                       # vendored Monaco 0.52.2 + Tailwind browser build (committed)
+bin/diff-review                 # entry shim (dist, with tsx fallback)
+scripts/
+  vendor.mjs                    # re-fetch/upgrade vendored assets
+  dev-window.ts                 # manual verification: fake dataset + fake Exec → open window
+```
+
+### Data lifecycle (channel-based)
+
+The window opens immediately and shows a loading state. The webview posts a `ready` message; the orchestrator gathers the git data (if not pre-supplied) and sends `init` then `files` over the message channel. File contents are fetched lazily via `request-file` → `file-data`, through an LRU cache (cap ~40) with next-file-in-sidebar prefetch. No data is inlined into the HTML.
+
+### Web assets
+
+Tailwind and Monaco are vendored into `web/vendor/` (committed; ~15MB) and referenced relatively from `index.html`, which is loaded via glimpse's `loadFile` from the on-disk `web/` directory. This retires the `NavigateToString` size limit and removes all CDN calls at runtime and install. Re-vendor or upgrade with `npm run vendor`.
+
+## Development
+
+```bash
+npm run check        # tsgo --noEmit across the new layout
+npm run build        # compile to dist/
+npm run vendor       # re-fetch/upgrade vendored Monaco + Tailwind into web/vendor/
+npm run dev:window   # open the review window against a fake dataset + fake Exec (manual verification)
+```
+
+`scripts/dev-window.ts` builds a 2-file fake `ReviewWindowData`, a fake `Exec` that returns fixture contents for `git show`, and opens `openReviewWindowWithData`. Use it to verify UI changes without a real repo.
 
 ## opencode support
 
-To run the opencode binding locally in this folder:
+To run the opencode binding locally:
 
 1. Make sure opencode's local plugin deps are present:
    ```bash
    cd .opencode && bun add @opencode-ai/plugin
    ```
-   This populates `.opencode/node_modules/` (gitignored). If you already have opencode installed system-wide, it will resolve these from the user's global cache.
-2. From the repo root, start opencode:
-   ```bash
-   opencode
-   ```
+2. From the repo root, start opencode: `opencode`
 3. Type `/diff-review` (or `/diff-review main`) in the TUI.
 
-What happens:
-
-- opencode discovers `.opencode/plugins/diff-review.ts` → re-exports `DiffReviewPlugin` from `../../src/bindings/opencode.js`.
-- The plugin's `command.execute.before` hook fires for `diff-review`, opens the native Glimpse window via `core/`, awaits the user's submit/cancel, then **inserts** the composed feedback prompt into the opencode chat box as a draft. Press Enter to send it to the LLM.
-- If you instead let the LLM call the `diff_review` tool directly (e.g. “please review my diff”), the same flow runs but through the custom-tool path.
-
-To publish:
-
-1. Fork or push this directory to a GitHub repo.
-2. Tag a release.
-3. Install with `pi install git:https://github.com/YOUR_USERNAME/pi-diff-review-wsl`.
-
-To publish to npm:
-
-```bash
-npm publish
-# Then install with pi install npm:pi-diff-review-wsl
-```
+The plugin's `command.execute.before` hook fires for `diff-review`, opens the native Glimpse window, awaits submit/cancel, then inserts the composed feedback into the opencode chat box as a draft. The command's automatic LLM call is aborted (`__DIFF_REVIEW_ABORT__`) until opencode exposes a clean abort API.
 
 ## Fixes and workarounds
 
+### Offline / no CDN
+
+The review UI loads Tailwind and Monaco from `web/vendor/` (committed to the repo), not from CDNs. The window page is loaded via `loadFile` against the on-disk `web/index.html`, so relative `./app.js` and `./vendor/…` references resolve from disk. On WSL the web directory is reached via a `\\wsl.localhost\<distro>\…` UNC path that WebView2 resolves (and which keeps vendor assets same-origin).
+
 ### WebView2 `NavigateToString` size limit (Windows / WSL2)
 
-On Windows, WebView2’s `NavigateToString` method cannot accept very large HTML strings. In a large repo or branch, the generated review HTML can exceed this limit and throw:
-
-```
-System.ArgumentException: Value does not fall within the expected range.
-```
-
-**Fix:** `src/wsl-glimpse.ts` now writes the HTML to a file in `C:\temp\pi-diff-review-wsl-*` and loads it via `loadFile()` instead of passing it as an inline string.
+Large diffs used to exceed WebView2's `NavigateToString` limit. This is now moot: the HTML loaded is the small static `index.html` (no inlined data), and all data flows over the message channel.
 
 ### Brief dark placeholder / flicker on open
 
-Because the file is loaded after the window is created, the window first shows a tiny placeholder while the file loads. The placeholder uses a dark background (`#1a1a2e`) that matches the review app, so the flash is minimal. The window is shown immediately after `loadFile()` starts so opening feels responsive, rather than waiting for the file to fully load before revealing the window.
+The window first shows a tiny dark placeholder while `loadFile` swaps in the real page. The placeholder background matches the review app, so the flash is minimal.
 
-If the flicker is still annoying, you can experiment with the `placeholder` string in `src/wsl-glimpse.ts` or set `hidden: true` and un-hide only after the file finishes loading (slower but no flash).
+## Packaging as a pi extension
 
-## Files changed from the original
+```json
+{
+  "name": "pi-diff-review-wsl",
+  "keywords": ["pi-package"],
+  "pi": { "extensions": ["./src/bindings/pi.ts"] },
+  "bin": { "diff-review": "./bin/diff-review" },
+  "files": ["bin", "dist", "src", "types", "web"]
+}
+```
 
-- `src/wsl-glimpse.ts` — new WSL2 detection and Windows routing wrapper, plus a file-based HTML loader to avoid WebView2’s `NavigateToString` size limit
-- `src/git.ts` — supports an optional base branch (`/diff-review <base>`) and computes the merge base
-- `src/index.ts` — now imports `open` from `./wsl-glimpse.js` and parses the base-branch argument
-- `src/types.ts` — added `ReviewWindowData` interface
-- `package.json` — renamed, made publishable, removed `private: true`
-- `README.md` — this file
+`web` (including `web/vendor/`) is shipped in `files`; there is no `postinstall` and no runtime download.
 
-## Refactor vs the original `pi-diff-review`
+## Adapted from
 
-The original was a single pi-coupled module. This fork reorganises it so the diff-review domain is reusable across agentic coding tools:
-
-- `src/core/git.ts` — git pipeline takes an injected `Exec` (a structural subset of `@earendil-works/pi-coding-agent`'s `ExecOptions`/`ExecResult`, so pi drops in directly) instead of depending on `ExtensionAPI`
-- `src/core/review-window.ts` — owns the message protocol (open window, lazy-load on `request-file`, settle on submit/cancel/closed) and exposes `{ result, close }` so bindings can race cancellation
-- `src/core/{types,prompt,ui,wsl-glimpse}.ts` — moved as-is (already pi-free)
-- `src/core/index.ts` — public API barrel
-- `src/bindings/pi.ts` — slim pi adapter (was `src/index.ts`); only file in the repo that imports `@earendil-works/pi-coding-agent` / `@earendil-works/pi-tui`
-- `src/bindings/opencode.ts` — slim opencode adapter. Defines a custom `diff_review` tool and hooks `command.execute.before` so a `/diff-review` slash command opens the review window and inserts the composed feedback into the chat box as a draft
-- `.opencode/plugins/diff-review.ts` — opencode's loader entry; thin re-export of the binding
-- `.opencode/commands/diff-review.md` — slash command the user types
-- `src/bindings/cli.ts` — standalone shell adapter. Opens the review window and copies the composed feedback to the clipboard on submit; no AI agent required
-- `bin/diff-review` — executable entry point that uses the compiled `dist` output if available, otherwise falls back to `tsx` for local development
-- `src/index.ts` — root barrel re-exporting the core for direct consumers
-- `package.json` — `pi.extensions` now points at `./src/bindings/pi.ts`; `@opencode-ai/plugin` + `@opencode-ai/sdk` + `@types/bun` are devDeps for typechecking the opencode binding; `bin` points at `./bin/diff-review`
-
-## Adapted from:
 A WSL2-adapted fork of [pi-diff-review](https://github.com/badlogic/pi-diff-review) by Mario Zechner.

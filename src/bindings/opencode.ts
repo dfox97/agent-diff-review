@@ -15,7 +15,6 @@ import type { Plugin, PluginInput } from "@opencode-ai/plugin";
 import type { OpencodeClient } from "@opencode-ai/sdk";
 import {
 	composeReviewPrompt,
-	getReviewWindowData,
 	openReviewWindow,
 	type Exec,
 	type ExecResult,
@@ -86,12 +85,7 @@ async function runReviewFlow(
 	cwd: string,
 	baseBranch?: string,
 ): Promise<ReviewFlowResult> {
-	const data = await getReviewWindowData(exec, cwd, baseBranch);
-	if (data.files.length === 0) {
-		return { status: "empty", reason: "No reviewable files found." };
-	}
-
-	const handle = openReviewWindow(exec, data, {
+	const handle = openReviewWindow(exec, cwd, baseBranch, {
 		width: 1680,
 		height: 1020,
 		title: "opencode review",
@@ -102,7 +96,14 @@ async function runReviewFlow(
 		if (message == null || message.type === "cancel") {
 			return { status: "cancel" };
 		}
+		if (message.overallComment.trim().length === 0 && message.comments.every((comment) => comment.body.trim().length === 0)) {
+			return { status: "empty", reason: "Review submitted with no comments." };
+		}
+		const data = await handle.data;
 		return { status: "prompt", text: composeReviewPrompt(data.files, message) };
+	} catch (error) {
+		const reason = error instanceof Error ? error.message : String(error);
+		return { status: "empty", reason };
 	} finally {
 		handle.close();
 	}

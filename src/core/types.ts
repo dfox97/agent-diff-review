@@ -65,7 +65,31 @@ export interface ReviewRequestFilePayload {
 	commitSha?: string;
 }
 
-export type ReviewWindowMessage = ReviewSubmitPayload | ReviewCancelPayload | ReviewRequestFilePayload;
+/** Sent by the webview once it has booted and registered `__reviewReceive`. */
+export interface ReviewReadyPayload {
+	type: "ready";
+}
+
+export type ReviewWindowMessage =
+	| ReviewSubmitPayload
+	| ReviewCancelPayload
+	| ReviewRequestFilePayload
+	| ReviewReadyPayload;
+
+/** Host → webview: identifies the repo + base before the file index arrives. */
+export interface ReviewInitMessage {
+	type: "init";
+	repoRoot: string;
+	baseBranch?: string;
+	mergeBase?: string;
+}
+
+/** Host → webview: the full file index + commit list, sent after `init`. */
+export interface ReviewFilesMessage {
+	type: "files";
+	files: ReviewFile[];
+	commits: ReviewCommit[];
+}
 
 export interface ReviewFileDataMessage {
 	type: "file-data";
@@ -86,7 +110,11 @@ export interface ReviewFileErrorMessage {
 	message: string;
 }
 
-export type ReviewHostMessage = ReviewFileDataMessage | ReviewFileErrorMessage;
+export type ReviewHostMessage =
+	| ReviewInitMessage
+	| ReviewFilesMessage
+	| ReviewFileDataMessage
+	| ReviewFileErrorMessage;
 
 export interface ReviewWindowData {
 	repoRoot: string;

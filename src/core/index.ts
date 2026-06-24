@@ -1,7 +1,7 @@
 /**
  * Agent-agnostic core for `pi-diff-review-wsl`. Provides the diff-review data
  * pipeline, the prompt composer, and the window orchestrator. Any tool binding
- * (pi, Claude Code, OpenCode, Codex, …) imports from here and supplies its own
+ * (pi, opencode, CLI, …) imports from here and supplies its own
  * {@link Exec} implementation.
  */
 
@@ -18,7 +18,10 @@ export type {
 	ReviewSubmitPayload,
 	ReviewCancelPayload,
 	ReviewRequestFilePayload,
+	ReviewReadyPayload,
 	ReviewWindowMessage,
+	ReviewInitMessage,
+	ReviewFilesMessage,
 	ReviewFileDataMessage,
 	ReviewFileErrorMessage,
 	ReviewHostMessage,
@@ -26,18 +29,19 @@ export type {
 } from "./types.js";
 
 // Git pipeline (with injectable Exec)
-export type { Exec, ExecOptions, ExecResult } from "./git.js";
-export { getRepoRoot, getReviewWindowData, loadReviewFileContents } from "./git.js";
+export type { Exec, ExecOptions, ExecResult } from "./git/types.js";
+export { getRepoRoot, getReviewWindowData, loadReviewFileContents, ReviewFileContentCache } from "./git/index.js";
 
 // Markdown prompt composer
 export { composeReviewPrompt } from "./prompt.js";
 
-// HTML builder (loads web/index.html + web/app.js)
-export { buildReviewHtml } from "./ui.js";
+// HTML builder (loads web/index.html + app.js)
+export { buildPlaceholderHtml, readIndexHtml } from "./ui.js";
 
 // Window orchestrator (open + lazy-load + lifecycle)
-export type { OpenReviewWindowOptions, OpenReviewWindowHandle } from "./review-window.js";
-export { openReviewWindow } from "./review-window.js";
+export type { OpenReviewWindowOptions, OpenReviewWindowHandle } from "./window/orchestrator.js";
+export { openReviewWindow, openReviewWindowWithData } from "./window/orchestrator.js";
 
-// Platform adapter (Glimpse with WSL2 fallback). Useful for diagnostics:
-export { isWSL } from "./wsl-glimpse.js";
+// Platform adapter (Glimpse with WSL2 fallback). Useful for diagnostics.
+export { isWSL } from "../platform/wsl-glimpse.js";
+export { resolveWebDir, resolveLoadFilePath } from "../platform/resolve-web-dir.js";

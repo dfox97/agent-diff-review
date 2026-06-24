@@ -31,6 +31,8 @@
   "scripts": {
     "check": "tsgo --noEmit",
     "build": "tsgo -p tsconfig.build.json",
+    "dev:window": "tsx scripts/dev-window.ts",
+    "vendor": "node scripts/vendor.mjs",
     "prepublishOnly": "npm run build"
   },
   "pi": {

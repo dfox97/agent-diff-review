@@ -1,14 +1,35 @@
-const reviewData = JSON.parse(document.getElementById("diff-review-data").textContent || "{}");
+/* ============================================================================
+ * pi-diff-review-wsl — review window app
+ *
+ * Structure (Q7-A: structural cleanup only, no build step):
+ *   1. State
+ *   2. DOM refs
+ *   3. Pure helpers (escape, language, scope labels, search scoring, tree)
+ *   4. Git-data access (scoped files, active file, comparisons, content cache)
+ *   5. Monaco glue (diff editor, glyph hover, view zones, decorations)
+ *   6. Comment model + modals
+ *   7. Sidebar / tree rendering
+ *   8. Rendering orchestration (renderTree / renderAll / mountFile)
+ *   9. Message handlers (host → webview via window.__reviewReceive)
+ *  10. Event wiring + boot
+ *
+ * Data flows over the message channel (no inline JSON): the host sends
+ * `init` then `files` once the webview posts `ready`; file contents arrive
+ * lazily via `request-file` / `file-data`. See src/core/window/protocol.ts.
+ * ========================================================================== */
+
+// ---- 1. State -------------------------------------------------------------
+const reviewData = {
+  repoRoot: "",
+  files: [],
+  commits: [],
+  baseBranch: undefined,
+  mergeBase: undefined,
+};
 
 const state = {
   activeFileId: null,
-  currentScope: reviewData.files.some((file) => file.inGitDiff)
-    ? "git-diff"
-    : reviewData.files.some((file) => file.inLastCommit)
-      ? "last-commit"
-      : reviewData.commits?.length > 0
-        ? "commit"
-        : "all-files",
+  currentScope: "git-diff",
   comments: [],
   overallComment: "",
   hideUnchanged: false,
@@ -18,12 +39,14 @@ const state = {
   scrollPositions: {},
   sidebarCollapsed: false,
   fileFilter: "",
-  selectedCommitSha: reviewData.commits?.[0]?.sha || null,
+  selectedCommitSha: null,
   fileContents: {},
   fileErrors: {},
   pendingRequestIds: {},
+  filesReceived: false,
 };
 
+// ---- 2. DOM refs ----------------------------------------------------------
 const sidebarEl = document.getElementById("sidebar");
 const sidebarTitleEl = document.getElementById("sidebar-title");
 const sidebarSearchInputEl = document.getElementById("sidebar-search-input");
@@ -48,8 +71,8 @@ const fileCommentButton = document.getElementById("file-comment-button");
 const toggleReviewedButton = document.getElementById("toggle-reviewed-button");
 const toggleUnchangedButton = document.getElementById("toggle-unchanged-button");
 const toggleWrapButton = document.getElementById("toggle-wrap-button");
+const loadingOverlayEl = document.getElementById("review-loading-overlay");
 
-repoRootEl.textContent = reviewData.repoRoot || "";
 windowTitleEl.textContent = "Review";
 
 let monacoApi = null;
@@ -62,6 +85,7 @@ let activeViewZones = [];
 let editorResizeObserver = null;
 let requestSequence = 0;
 
+// ---- 3. Pure helpers ------------------------------------------------------
 function escapeHtml(value) {
   return String(value)
     .replace(/&/g, "&amp;")
@@ -129,6 +153,41 @@ function isFileReviewed(fileId) {
   return state.reviewedFiles[fileId] === true;
 }
 
+function getBaseName(path) {
+  const parts = path.split("/");
+  return parts[parts.length - 1] || path;
+}
+
+function normalizeQuery(query) {
+  return String(query || "").trim().toLowerCase().replace(/\s+/g, "");
+}
+
+function scoreSubsequence(query, candidate) {
+  if (!query) return 0;
+  let queryIndex = 0;
+  let score = 0;
+  let firstMatchIndex = -1;
+  let previousMatchIndex = -2;
+
+  for (let i = 0; i < candidate.length && queryIndex < query.length; i += 1) {
+    if (candidate[i] !== query[queryIndex]) continue;
+    if (firstMatchIndex === -1) firstMatchIndex = i;
+    score += 10;
+    if (i === previousMatchIndex + 1) score += 8;
+    const previousChar = i > 0 ? candidate[i - 1] : "";
+    if (i === 0 || previousChar === "/" || previousChar === "_" || previousChar === "-" || previousChar === ".") {
+      score += 12;
+    }
+    previousMatchIndex = i;
+    queryIndex += 1;
+  }
+
+  if (queryIndex !== query.length) return -1;
+  if (firstMatchIndex >= 0) score += Math.max(0, 20 - firstMatchIndex);
+  return score;
+}
+
+// ---- 4. Git-data access ---------------------------------------------------
 function getScopedFiles() {
   switch (state.currentScope) {
     case "git-diff":
@@ -148,9 +207,7 @@ function ensureActiveFileForScope() {
     state.activeFileId = null;
     return;
   }
-  if (scopedFiles.some((file) => file.id === state.activeFileId)) {
-    return;
-  }
+  if (scopedFiles.some((file) => file.id === state.activeFileId)) return;
   state.activeFileId = scopedFiles[0].id;
 }
 
@@ -188,66 +245,23 @@ function getFileSearchPath(file) {
   return file?.path || "";
 }
 
-function getBaseName(path) {
-  const parts = path.split("/");
-  return parts[parts.length - 1] || path;
-}
-
 function getActiveStatus(file) {
   const comparison = getScopeComparison(file, state.currentScope);
   return comparison?.status ?? file?.worktreeStatus ?? null;
 }
 
-function normalizeQuery(query) {
-  return String(query || "").trim().toLowerCase().replace(/\s+/g, "");
-}
-
-function scoreSubsequence(query, candidate) {
-  if (!query) return 0;
-  let queryIndex = 0;
-  let score = 0;
-  let firstMatchIndex = -1;
-  let previousMatchIndex = -2;
-
-  for (let i = 0; i < candidate.length && queryIndex < query.length; i += 1) {
-    if (candidate[i] !== query[queryIndex]) continue;
-
-    if (firstMatchIndex === -1) firstMatchIndex = i;
-    score += 10;
-
-    if (i === previousMatchIndex + 1) {
-      score += 8;
-    }
-
-    const previousChar = i > 0 ? candidate[i - 1] : "";
-    if (i === 0 || previousChar === "/" || previousChar === "_" || previousChar === "-" || previousChar === ".") {
-      score += 12;
-    }
-
-    previousMatchIndex = i;
-    queryIndex += 1;
-  }
-
-  if (queryIndex !== query.length) return -1;
-  if (firstMatchIndex >= 0) score += Math.max(0, 20 - firstMatchIndex);
-  return score;
-}
-
 function getFileSearchScore(query, file) {
   const normalizedQuery = normalizeQuery(query);
   if (!normalizedQuery) return 0;
-
   const path = getFileSearchPath(file).toLowerCase();
   const baseName = getBaseName(path);
   const pathScore = scoreSubsequence(normalizedQuery, path);
   const baseScore = scoreSubsequence(normalizedQuery, baseName);
   let score = Math.max(pathScore, baseScore >= 0 ? baseScore + 40 : -1);
-
   if (score < 0) return -1;
   if (baseName === normalizedQuery) score += 200;
   else if (baseName.startsWith(normalizedQuery)) score += 120;
   else if (path.includes(normalizedQuery)) score += 35;
-
   return score;
 }
 
@@ -255,7 +269,6 @@ function getFilteredFiles() {
   const scopedFiles = getScopedFiles();
   const query = state.fileFilter.trim();
   if (!query) return [...scopedFiles];
-
   return scopedFiles
     .map((file) => ({ file, score: getFileSearchScore(query, file) }))
     .filter((entry) => entry.score >= 0)
@@ -305,6 +318,55 @@ function scrollKey(scope, fileId) {
   return `${scopeInstanceKey(scope)}:${fileId}`;
 }
 
+function getRequestState(fileId, scope = state.currentScope) {
+  const key = cacheKey(scope, fileId);
+  return {
+    contents: state.fileContents[key],
+    error: state.fileErrors[key],
+    requestId: state.pendingRequestIds[key],
+  };
+}
+
+function ensureFileLoaded(fileId, scope = state.currentScope) {
+  if (!fileId) return;
+  const key = cacheKey(scope, fileId);
+  if (state.fileContents[key] != null) return;
+  if (state.fileErrors[key] != null) return;
+  if (state.pendingRequestIds[key] != null) return;
+  const requestId = `request:${Date.now()}:${++requestSequence}`;
+  state.pendingRequestIds[key] = requestId;
+  renderTree();
+  if (window.glimpse?.send) {
+    window.glimpse.send({ type: "request-file", requestId, fileId, scope, commitSha: scope === "commit" ? state.selectedCommitSha : undefined });
+  }
+}
+
+function openFile(fileId) {
+  if (state.activeFileId === fileId) {
+    ensureFileLoaded(fileId, state.currentScope);
+    return;
+  }
+  saveCurrentScrollPosition();
+  state.activeFileId = fileId;
+  renderAll({ restoreFileScroll: true });
+  ensureFileLoaded(fileId, state.currentScope);
+}
+
+function canCommentOnSide(file, side) {
+  if (!file) return false;
+  const comparison = activeComparison();
+  if (side === "original") return comparison != null && comparison.hasOriginal;
+  return comparison != null ? comparison.hasModified : file.hasWorkingTreeFile;
+}
+
+function isActiveFileReady() {
+  const file = activeFile();
+  if (!file) return false;
+  const requestState = getRequestState(file.id, state.currentScope);
+  return requestState.contents != null && requestState.error == null;
+}
+
+// ---- 5. Monaco glue -------------------------------------------------------
 function saveCurrentScrollPosition() {
   if (!diffEditor || !state.activeFileId) return;
   const originalEditor = diffEditor.getOriginalEditor();
@@ -351,49 +413,319 @@ function restoreScrollState(scrollState) {
   modifiedEditor.setScrollLeft(scrollState.modifiedLeft);
 }
 
-function getRequestState(fileId, scope = state.currentScope) {
-  const key = cacheKey(scope, fileId);
-  return {
-    contents: state.fileContents[key],
-    error: state.fileErrors[key],
-    requestId: state.pendingRequestIds[key],
-  };
+function layoutEditor() {
+  if (!diffEditor) return;
+  const width = editorContainerEl.clientWidth;
+  const height = editorContainerEl.clientHeight;
+  if (width <= 0 || height <= 0) return;
+  diffEditor.layout({ width, height });
 }
 
-function ensureFileLoaded(fileId, scope = state.currentScope) {
-  if (!fileId) return;
-  const key = cacheKey(scope, fileId);
-  if (state.fileContents[key] != null) return;
-  if (state.fileErrors[key] != null) return;
-  if (state.pendingRequestIds[key] != null) return;
+function clearViewZones() {
+  if (!diffEditor || activeViewZones.length === 0) return;
+  const original = diffEditor.getOriginalEditor();
+  const modified = diffEditor.getModifiedEditor();
+  original.changeViewZones((accessor) => {
+    for (const zone of activeViewZones) if (zone.editor === original) accessor.removeZone(zone.id);
+  });
+  modified.changeViewZones((accessor) => {
+    for (const zone of activeViewZones) if (zone.editor === modified) accessor.removeZone(zone.id);
+  });
+  activeViewZones = [];
+}
 
-  const requestId = `request:${Date.now()}:${++requestSequence}`;
-  state.pendingRequestIds[key] = requestId;
-  renderTree();
-  if (window.glimpse?.send) {
-    window.glimpse.send({ type: "request-file", requestId, fileId, scope, commitSha: scope === "commit" ? state.selectedCommitSha : undefined });
+function applyEditorOptions() {
+  if (!diffEditor) return;
+  diffEditor.updateOptions({
+    renderSideBySide: activeFileShowsDiff(),
+    diffWordWrap: state.wrapLines ? "on" : "off",
+    hideUnchangedRegions: {
+      enabled: activeFileShowsDiff() && state.hideUnchanged,
+      contextLineCount: 4,
+      minimumLineCount: 2,
+      revealLineCount: 12,
+    },
+  });
+  diffEditor.getOriginalEditor().updateOptions({ wordWrap: state.wrapLines ? "on" : "off" });
+  diffEditor.getModifiedEditor().updateOptions({ wordWrap: state.wrapLines ? "on" : "off" });
+}
+
+function updateDecorations() {
+  if (!diffEditor || !monacoApi) return;
+  const file = activeFile();
+  const comments = file ? state.comments.filter((comment) => comment.fileId === file.id && comment.scope === state.currentScope && (comment.scope !== "commit" || comment.commitSha === state.selectedCommitSha) && comment.side !== "file") : [];
+  const originalRanges = [];
+  const modifiedRanges = [];
+  for (const comment of comments) {
+    const range = {
+      range: new monacoApi.Range(comment.startLine, 1, comment.startLine, 1),
+      options: {
+        isWholeLine: true,
+        className: comment.side === "original" ? "review-comment-line-original" : "review-comment-line-modified",
+        glyphMarginClassName: comment.side === "original" ? "review-comment-glyph-original" : "review-comment-glyph-modified",
+      },
+    };
+    if (comment.side === "original") originalRanges.push(range);
+    else modifiedRanges.push(range);
   }
+  originalDecorations = diffEditor.getOriginalEditor().deltaDecorations(originalDecorations, originalRanges);
+  modifiedDecorations = diffEditor.getModifiedEditor().deltaDecorations(modifiedDecorations, modifiedRanges);
 }
 
-function openFile(fileId) {
-  if (state.activeFileId === fileId) {
-    ensureFileLoaded(fileId, state.currentScope);
+function createGlyphHoverActions(editor, side) {
+  let hoverDecoration = [];
+
+  function openDraftAtLine(line) {
+    const file = activeFile();
+    if (!file || !canCommentOnSide(file, side) || !isActiveFileReady()) return;
+    state.comments.push({
+      id: `${Date.now()}:${Math.random().toString(16).slice(2)}`,
+      fileId: file.id,
+      scope: state.currentScope,
+      commitSha: state.currentScope === "commit" ? state.selectedCommitSha : undefined,
+      side,
+      startLine: line,
+      endLine: line,
+      body: "",
+    });
+    updateCommentsUI();
+    editor.revealLineInCenter(line);
+  }
+
+  editor.onMouseMove((event) => {
+    const file = activeFile();
+    if (!file || !canCommentOnSide(file, side) || !isActiveFileReady()) {
+      hoverDecoration = editor.deltaDecorations(hoverDecoration, []);
+      return;
+    }
+    const target = event.target;
+    if (target.type === monacoApi.editor.MouseTargetType.GUTTER_GLYPH_MARGIN || target.type === monacoApi.editor.MouseTargetType.GUTTER_LINE_NUMBERS) {
+      const line = target.position?.lineNumber;
+      if (!line) return;
+      hoverDecoration = editor.deltaDecorations(hoverDecoration, [{
+        range: new monacoApi.Range(line, 1, line, 1),
+        options: { glyphMarginClassName: "review-glyph-plus" },
+      }]);
+    } else {
+      hoverDecoration = editor.deltaDecorations(hoverDecoration, []);
+    }
+  });
+
+  editor.onMouseLeave(() => {
+    hoverDecoration = editor.deltaDecorations(hoverDecoration, []);
+  });
+
+  editor.onMouseDown((event) => {
+    const file = activeFile();
+    if (!file || !canCommentOnSide(file, side) || !isActiveFileReady()) return;
+    const target = event.target;
+    if (target.type === monacoApi.editor.MouseTargetType.GUTTER_GLYPH_MARGIN || target.type === monacoApi.editor.MouseTargetType.GUTTER_LINE_NUMBERS) {
+      const line = target.position?.lineNumber;
+      if (!line) return;
+      openDraftAtLine(line);
+    }
+  });
+}
+
+function setupMonaco() {
+  window.require.config({
+    paths: { vs: "./vendor/monaco/vs" },
+  });
+
+  window.require(["vs/editor/editor.main"], function () {
+    monacoApi = window.monaco;
+    monacoApi.editor.defineTheme("review-dark", {
+      base: "vs-dark",
+      inherit: true,
+      rules: [],
+      colors: {
+        "editor.background": "#0d1117",
+        "diffEditor.insertedTextBackground": "#2ea04326",
+        "diffEditor.removedTextBackground": "#f8514926",
+      },
+    });
+    monacoApi.editor.setTheme("review-dark");
+
+    diffEditor = monacoApi.editor.createDiffEditor(editorContainerEl, {
+      automaticLayout: true,
+      renderSideBySide: activeFileShowsDiff(),
+      readOnly: true,
+      originalEditable: false,
+      minimap: { enabled: true, renderCharacters: false, showSlider: "always", size: "proportional" },
+      renderOverviewRuler: true,
+      diffWordWrap: "on",
+      scrollBeyondLastLine: false,
+      lineNumbersMinChars: 4,
+      glyphMargin: true,
+      folding: true,
+      lineDecorationsWidth: 10,
+      overviewRulerBorder: false,
+      wordWrap: "on",
+    });
+
+    createGlyphHoverActions(diffEditor.getOriginalEditor(), "original");
+    createGlyphHoverActions(diffEditor.getModifiedEditor(), "modified");
+
+    if (typeof ResizeObserver !== "undefined") {
+      editorResizeObserver = new ResizeObserver(() => layoutEditor());
+      editorResizeObserver.observe(editorContainerEl);
+    }
+
+    requestAnimationFrame(() => {
+      layoutEditor();
+      setTimeout(layoutEditor, 50);
+      setTimeout(layoutEditor, 150);
+    });
+
+    if (state.filesReceived) mountFile();
+  });
+}
+
+// ---- 6. Comment model + modals -------------------------------------------
+function showTextModal(options) {
+  const backdrop = document.createElement("div");
+  backdrop.className = "review-modal-backdrop";
+  backdrop.innerHTML = `
+    <div class="review-modal-card">
+      <div class="mb-2 text-base font-semibold text-white">${escapeHtml(options.title)}</div>
+      <div class="mb-4 text-sm text-review-muted">${escapeHtml(options.description)}</div>
+      <textarea id="review-modal-text" class="scrollbar-thin min-h-48 w-full resize-y rounded-md border border-review-border bg-[#010409] px-3 py-2 text-sm text-review-text outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500">${escapeHtml(options.initialValue ?? "")}</textarea>
+      <div class="mt-4 flex justify-end gap-2">
+        <button id="review-modal-cancel" class="cursor-pointer rounded-md border border-review-border bg-review-panel px-4 py-2 text-sm font-medium text-review-text hover:bg-[#21262d]">Cancel</button>
+        <button id="review-modal-save" class="cursor-pointer rounded-md border border-[rgba(240,246,252,0.1)] bg-[#238636] px-4 py-2 text-sm font-medium text-white hover:bg-[#2ea043]">${escapeHtml(options.saveLabel ?? "Save")}</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(backdrop);
+  const textarea = backdrop.querySelector("#review-modal-text");
+  const close = () => backdrop.remove();
+  backdrop.querySelector("#review-modal-cancel").addEventListener("click", close);
+  backdrop.querySelector("#review-modal-save").addEventListener("click", () => {
+    options.onSave(textarea.value.trim());
+    close();
+  });
+  backdrop.addEventListener("click", (event) => {
+    if (event.target === backdrop) close();
+  });
+  textarea.focus();
+}
+
+function showOverallCommentModal() {
+  showTextModal({
+    title: "Overall review note",
+    description: "This note is prepended to the generated prompt above the inline comments.",
+    initialValue: state.overallComment,
+    saveLabel: "Save note",
+    onSave: (value) => {
+      state.overallComment = value;
+      renderTree();
+    },
+  });
+}
+
+function showFileCommentModal() {
+  const file = activeFile();
+  if (!file) return;
+  showTextModal({
+    title: `File comment for ${getScopeDisplayPath(file, state.currentScope)}`,
+    description: `This comment applies to the whole file in ${scopeLabel(state.currentScope).toLowerCase()}.`,
+    initialValue: "",
+    saveLabel: "Add comment",
+    onSave: (value) => {
+      if (!value) return;
+      state.comments.push({
+        id: `${Date.now()}:${Math.random().toString(16).slice(2)}`,
+        fileId: file.id,
+        scope: state.currentScope,
+        commitSha: state.currentScope === "commit" ? state.selectedCommitSha : undefined,
+        side: "file",
+        startLine: null,
+        endLine: null,
+        body: value,
+      });
+      submitButton.disabled = false;
+      updateCommentsUI();
+    },
+  });
+}
+
+function renderCommentDOM(comment, onDelete) {
+  const container = document.createElement("div");
+  container.className = "view-zone-container";
+  const title = comment.side === "file"
+    ? `File comment • ${scopeLabel(comment.scope)}`
+    : `${comment.side === "original" ? "Original" : "Modified"} line ${comment.startLine} • ${scopeLabel(comment.scope)}`;
+  container.innerHTML = `
+    <div class="mb-2 flex items-center justify-between gap-3">
+      <div class="text-xs font-semibold text-review-text">${escapeHtml(title)}</div>
+      <button data-action="delete" class="cursor-pointer rounded-md border border-transparent bg-transparent px-2 py-1 text-xs font-medium text-review-muted hover:bg-red-500/10 hover:text-red-400">Delete</button>
+    </div>
+    <textarea data-comment-id="${escapeHtml(comment.id)}" class="scrollbar-thin min-h-[76px] w-full resize-y rounded-md border border-review-border bg-[#010409] px-3 py-2 text-sm text-review-text outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500" placeholder="Leave a comment"></textarea>
+  `;
+  const textarea = container.querySelector("textarea");
+  textarea.value = comment.body || "";
+  textarea.addEventListener("input", () => { comment.body = textarea.value; });
+  container.querySelector("[data-action='delete']").addEventListener("click", onDelete);
+  if (!comment.body) setTimeout(() => textarea.focus(), 50);
+  return container;
+}
+
+function syncViewZones() {
+  clearViewZones();
+  if (!diffEditor || !isActiveFileReady()) return;
+  const file = activeFile();
+  if (!file) return;
+  const originalEditor = diffEditor.getOriginalEditor();
+  const modifiedEditor = diffEditor.getModifiedEditor();
+  const inlineComments = state.comments.filter((comment) => comment.fileId === file.id && comment.scope === state.currentScope && (comment.scope !== "commit" || comment.commitSha === state.selectedCommitSha) && comment.side !== "file");
+  inlineComments.forEach((item) => {
+    const editor = item.side === "original" ? originalEditor : modifiedEditor;
+    const domNode = renderCommentDOM(item, () => {
+      state.comments = state.comments.filter((comment) => comment.id !== item.id);
+      updateCommentsUI();
+    });
+    editor.changeViewZones((accessor) => {
+      const lineCount = typeof item.body === "string" && item.body.length > 0 ? item.body.split("\n").length : 1;
+      const id = accessor.addZone({
+        afterLineNumber: item.startLine,
+        heightInPx: Math.max(150, lineCount * 22 + 86),
+        domNode,
+      });
+      activeViewZones.push({ id, editor });
+    });
+  });
+}
+
+function renderFileComments() {
+  fileCommentsContainer.innerHTML = "";
+  const file = activeFile();
+  if (!file) {
+    fileCommentsContainer.className = "hidden overflow-hidden px-0 py-0";
     return;
   }
-  saveCurrentScrollPosition();
-  state.activeFileId = fileId;
-  renderAll({ restoreFileScroll: true });
-  ensureFileLoaded(fileId, state.currentScope);
+  const fileComments = state.comments.filter((comment) => comment.fileId === file.id && comment.scope === state.currentScope && (comment.scope !== "commit" || comment.commitSha === state.selectedCommitSha) && comment.side === "file");
+  if (fileComments.length === 0) {
+    fileCommentsContainer.className = "hidden overflow-hidden px-0 py-0";
+    return;
+  }
+  fileCommentsContainer.className = "border-b border-review-border bg-[#0d1117] px-4 py-4 space-y-4";
+  fileComments.forEach((comment) => {
+    const dom = renderCommentDOM(comment, () => {
+      state.comments = state.comments.filter((item) => item.id !== comment.id);
+      updateCommentsUI();
+    });
+    dom.className = "rounded-lg border border-review-border bg-review-panel p-4";
+    fileCommentsContainer.appendChild(dom);
+  });
 }
 
+// ---- 7. Sidebar / tree rendering -----------------------------------------
 function renderTreeNode(node, depth) {
   const children = [...node.children.values()].sort((a, b) => {
     if (a.kind !== b.kind) return a.kind === "dir" ? -1 : 1;
     return a.name.localeCompare(b.name);
   });
-
   const indentPx = 12;
-
   for (const child of children) {
     if (child.kind === "dir") {
       const collapsed = state.collapsedDirs[child.path] === true;
@@ -497,7 +829,6 @@ function updateScopeButtons() {
     commit: state.selectedCommitSha ? reviewData.files.filter((file) => file.commitComparisons?.[state.selectedCommitSha]).length : 0,
     all: reviewData.files.filter((file) => file.hasWorkingTreeFile).length,
   };
-
   const applyButtonClasses = (button, active, disabled) => {
     button.disabled = disabled;
     button.className = disabled
@@ -506,17 +837,14 @@ function updateScopeButtons() {
         ? "cursor-pointer rounded-md border border-[#2ea043]/40 bg-[#238636]/15 px-2.5 py-1 text-[11px] font-medium text-[#3fb950] hover:bg-[#238636]/25"
         : "cursor-pointer rounded-md border border-review-border bg-review-panel px-2.5 py-1 text-[11px] font-medium text-review-text hover:bg-[#21262d]";
   };
-
   scopeDiffButton.textContent = `Git diff${counts.diff > 0 ? ` (${counts.diff})` : ""}`;
   scopeLastCommitButton.textContent = `Last commit${counts.lastCommit > 0 ? ` (${counts.lastCommit})` : ""}`;
   scopeCommitButton.textContent = `Commits${counts.commit > 0 ? ` (${counts.commit})` : ""}`;
   scopeAllButton.textContent = `All files${counts.all > 0 ? ` (${counts.all})` : ""}`;
-
   applyButtonClasses(scopeDiffButton, state.currentScope === "git-diff", counts.diff === 0);
   applyButtonClasses(scopeLastCommitButton, state.currentScope === "last-commit", counts.lastCommit === 0);
   applyButtonClasses(scopeCommitButton, state.currentScope === "commit", !state.selectedCommitSha || counts.commit === 0);
   applyButtonClasses(scopeAllButton, state.currentScope === "all-files", counts.all === 0);
-
   commitSelectEl.className = state.currentScope === "commit"
     ? "mb-3 block w-full rounded-md border border-review-border bg-review-panel px-2 py-2 text-xs text-review-text outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
     : "mb-3 hidden w-full rounded-md border border-review-border bg-review-panel px-2 py-2 text-xs text-review-text outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500";
@@ -537,256 +865,28 @@ function updateToggleButtons() {
   submitButton.disabled = false;
 }
 
-function applyEditorOptions() {
-  if (!diffEditor) return;
-  diffEditor.updateOptions({
-    renderSideBySide: activeFileShowsDiff(),
-    diffWordWrap: state.wrapLines ? "on" : "off",
-    hideUnchangedRegions: {
-      enabled: activeFileShowsDiff() && state.hideUnchanged,
-      contextLineCount: 4,
-      minimumLineCount: 2,
-      revealLineCount: 12,
-    },
-  });
-  diffEditor.getOriginalEditor().updateOptions({ wordWrap: state.wrapLines ? "on" : "off" });
-  diffEditor.getModifiedEditor().updateOptions({ wordWrap: state.wrapLines ? "on" : "off" });
-}
-
+// ---- 8. Rendering orchestration ------------------------------------------
 function renderTree() {
   ensureActiveFileForScope();
   fileTreeEl.innerHTML = "";
   const scopedFiles = getScopedFiles();
   const visibleFiles = getFilteredFiles();
-
   if (visibleFiles.length === 0) {
     const message = state.fileFilter.trim()
       ? `No files match <span class="text-review-text">${escapeHtml(state.fileFilter.trim())}</span>.`
       : `No files in <span class="text-review-text">${escapeHtml(scopeLabel(state.currentScope).toLowerCase())}</span>.`;
-    fileTreeEl.innerHTML = `
-      <div class="px-3 py-4 text-sm text-review-muted">
-        ${message}
-      </div>
-    `;
+    fileTreeEl.innerHTML = `<div class="px-3 py-4 text-sm text-review-muted">${message}</div>`;
   } else if (state.fileFilter.trim()) {
     renderSearchResults(visibleFiles);
   } else {
     renderTreeNode(buildTree(visibleFiles), 0);
   }
-
   sidebarTitleEl.textContent = scopeLabel(state.currentScope);
   const comments = state.comments.length;
   const filteredSuffix = state.fileFilter.trim() ? ` • ${visibleFiles.length} shown` : "";
   summaryEl.textContent = `${scopedFiles.length} file(s) • ${comments} comment(s)${state.overallComment ? " • overall note" : ""}${filteredSuffix}`;
   updateToggleButtons();
   updateSidebarLayout();
-}
-
-function showTextModal(options) {
-  const backdrop = document.createElement("div");
-  backdrop.className = "review-modal-backdrop";
-  backdrop.innerHTML = `
-    <div class="review-modal-card">
-      <div class="mb-2 text-base font-semibold text-white">${escapeHtml(options.title)}</div>
-      <div class="mb-4 text-sm text-review-muted">${escapeHtml(options.description)}</div>
-      <textarea id="review-modal-text" class="scrollbar-thin min-h-48 w-full resize-y rounded-md border border-review-border bg-[#010409] px-3 py-2 text-sm text-review-text outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500">${escapeHtml(options.initialValue ?? "")}</textarea>
-      <div class="mt-4 flex justify-end gap-2">
-        <button id="review-modal-cancel" class="cursor-pointer rounded-md border border-review-border bg-review-panel px-4 py-2 text-sm font-medium text-review-text hover:bg-[#21262d]">Cancel</button>
-        <button id="review-modal-save" class="cursor-pointer rounded-md border border-[rgba(240,246,252,0.1)] bg-[#238636] px-4 py-2 text-sm font-medium text-white hover:bg-[#2ea043]">${escapeHtml(options.saveLabel ?? "Save")}</button>
-      </div>
-    </div>
-  `;
-  document.body.appendChild(backdrop);
-  const textarea = backdrop.querySelector("#review-modal-text");
-  const close = () => backdrop.remove();
-  backdrop.querySelector("#review-modal-cancel").addEventListener("click", close);
-  backdrop.querySelector("#review-modal-save").addEventListener("click", () => {
-    options.onSave(textarea.value.trim());
-    close();
-  });
-  backdrop.addEventListener("click", (event) => {
-    if (event.target === backdrop) close();
-  });
-  textarea.focus();
-}
-
-function showOverallCommentModal() {
-  showTextModal({
-    title: "Overall review note",
-    description: "This note is prepended to the generated prompt above the inline comments.",
-    initialValue: state.overallComment,
-    saveLabel: "Save note",
-    onSave: (value) => {
-      state.overallComment = value;
-      renderTree();
-    },
-  });
-}
-
-function showFileCommentModal() {
-  const file = activeFile();
-  if (!file) return;
-  showTextModal({
-    title: `File comment for ${getScopeDisplayPath(file, state.currentScope)}`,
-    description: `This comment applies to the whole file in ${scopeLabel(state.currentScope).toLowerCase()}.`,
-    initialValue: "",
-    saveLabel: "Add comment",
-    onSave: (value) => {
-      if (!value) return;
-      state.comments.push({
-        id: `${Date.now()}:${Math.random().toString(16).slice(2)}`,
-        fileId: file.id,
-        scope: state.currentScope,
-        commitSha: state.currentScope === "commit" ? state.selectedCommitSha : undefined,
-        side: "file",
-        startLine: null,
-        endLine: null,
-        body: value,
-      });
-      submitButton.disabled = false;
-      updateCommentsUI();
-    },
-  });
-}
-
-function layoutEditor() {
-  if (!diffEditor) return;
-  const width = editorContainerEl.clientWidth;
-  const height = editorContainerEl.clientHeight;
-  if (width <= 0 || height <= 0) return;
-  diffEditor.layout({ width, height });
-}
-
-function clearViewZones() {
-  if (!diffEditor || activeViewZones.length === 0) return;
-  const original = diffEditor.getOriginalEditor();
-  const modified = diffEditor.getModifiedEditor();
-  original.changeViewZones((accessor) => {
-    for (const zone of activeViewZones) if (zone.editor === original) accessor.removeZone(zone.id);
-  });
-  modified.changeViewZones((accessor) => {
-    for (const zone of activeViewZones) if (zone.editor === modified) accessor.removeZone(zone.id);
-  });
-  activeViewZones = [];
-}
-
-function renderCommentDOM(comment, onDelete) {
-  const container = document.createElement("div");
-  container.className = "view-zone-container";
-  const title = comment.side === "file"
-    ? `File comment • ${scopeLabel(comment.scope)}`
-    : `${comment.side === "original" ? "Original" : "Modified"} line ${comment.startLine} • ${scopeLabel(comment.scope)}`;
-
-  container.innerHTML = `
-    <div class="mb-2 flex items-center justify-between gap-3">
-      <div class="text-xs font-semibold text-review-text">${escapeHtml(title)}</div>
-      <button data-action="delete" class="cursor-pointer rounded-md border border-transparent bg-transparent px-2 py-1 text-xs font-medium text-review-muted hover:bg-red-500/10 hover:text-red-400">Delete</button>
-    </div>
-    <textarea data-comment-id="${escapeHtml(comment.id)}" class="scrollbar-thin min-h-[76px] w-full resize-y rounded-md border border-review-border bg-[#010409] px-3 py-2 text-sm text-review-text outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500" placeholder="Leave a comment"></textarea>
-  `;
-  const textarea = container.querySelector("textarea");
-  textarea.value = comment.body || "";
-  textarea.addEventListener("input", () => {
-    comment.body = textarea.value;
-  });
-  container.querySelector("[data-action='delete']").addEventListener("click", onDelete);
-  if (!comment.body) setTimeout(() => textarea.focus(), 50);
-  return container;
-}
-
-function canCommentOnSide(file, side) {
-  if (!file) return false;
-  const comparison = activeComparison();
-  if (side === "original") {
-    return comparison != null && comparison.hasOriginal;
-  }
-  return comparison != null ? comparison.hasModified : file.hasWorkingTreeFile;
-}
-
-function isActiveFileReady() {
-  const file = activeFile();
-  if (!file) return false;
-  const requestState = getRequestState(file.id, state.currentScope);
-  return requestState.contents != null && requestState.error == null;
-}
-
-function syncViewZones() {
-  clearViewZones();
-  if (!diffEditor || !isActiveFileReady()) return;
-  const file = activeFile();
-  if (!file) return;
-
-  const originalEditor = diffEditor.getOriginalEditor();
-  const modifiedEditor = diffEditor.getModifiedEditor();
-  const inlineComments = state.comments.filter((comment) => comment.fileId === file.id && comment.scope === state.currentScope && (comment.scope !== "commit" || comment.commitSha === state.selectedCommitSha) && comment.side !== "file");
-
-  inlineComments.forEach((item) => {
-    const editor = item.side === "original" ? originalEditor : modifiedEditor;
-    const domNode = renderCommentDOM(item, () => {
-      state.comments = state.comments.filter((comment) => comment.id !== item.id);
-      updateCommentsUI();
-    });
-
-    editor.changeViewZones((accessor) => {
-      const lineCount = typeof item.body === "string" && item.body.length > 0 ? item.body.split("\n").length : 1;
-      const id = accessor.addZone({
-        afterLineNumber: item.startLine,
-        heightInPx: Math.max(150, lineCount * 22 + 86),
-        domNode,
-      });
-      activeViewZones.push({ id, editor });
-    });
-  });
-}
-
-function updateDecorations() {
-  if (!diffEditor || !monacoApi) return;
-  const file = activeFile();
-  const comments = file ? state.comments.filter((comment) => comment.fileId === file.id && comment.scope === state.currentScope && (comment.scope !== "commit" || comment.commitSha === state.selectedCommitSha) && comment.side !== "file") : [];
-  const originalRanges = [];
-  const modifiedRanges = [];
-
-  for (const comment of comments) {
-    const range = {
-      range: new monacoApi.Range(comment.startLine, 1, comment.startLine, 1),
-      options: {
-        isWholeLine: true,
-        className: comment.side === "original" ? "review-comment-line-original" : "review-comment-line-modified",
-        glyphMarginClassName: comment.side === "original" ? "review-comment-glyph-original" : "review-comment-glyph-modified",
-      },
-    };
-    if (comment.side === "original") originalRanges.push(range);
-    else modifiedRanges.push(range);
-  }
-
-  originalDecorations = diffEditor.getOriginalEditor().deltaDecorations(originalDecorations, originalRanges);
-  modifiedDecorations = diffEditor.getModifiedEditor().deltaDecorations(modifiedDecorations, modifiedRanges);
-}
-
-function renderFileComments() {
-  fileCommentsContainer.innerHTML = "";
-  const file = activeFile();
-  if (!file) {
-    fileCommentsContainer.className = "hidden overflow-hidden px-0 py-0";
-    return;
-  }
-
-  const fileComments = state.comments.filter((comment) => comment.fileId === file.id && comment.scope === state.currentScope && (comment.scope !== "commit" || comment.commitSha === state.selectedCommitSha) && comment.side === "file");
-
-  if (fileComments.length === 0) {
-    fileCommentsContainer.className = "hidden overflow-hidden px-0 py-0";
-    return;
-  }
-
-  fileCommentsContainer.className = "border-b border-review-border bg-[#0d1117] px-4 py-4 space-y-4";
-  fileComments.forEach((comment) => {
-    const dom = renderCommentDOM(comment, () => {
-      state.comments = state.comments.filter((item) => item.id !== comment.id);
-      updateCommentsUI();
-    });
-    dom.className = "rounded-lg border border-review-border bg-review-panel p-4";
-    fileCommentsContainer.appendChild(dom);
-  });
 }
 
 function getPlaceholderContents(file, scope) {
@@ -821,23 +921,17 @@ function mountFile(options = {}) {
     requestAnimationFrame(layoutEditor);
     return;
   }
-
   ensureFileLoaded(file.id, state.currentScope);
-
   const preserveScroll = options.preserveScroll === true;
   const scrollState = preserveScroll ? captureScrollState() : null;
   const language = inferLanguage(getScopeFilePath(file) || file.path);
   const contents = getMountedContents(file, state.currentScope);
-
   clearViewZones();
   currentFileLabelEl.textContent = getScopeDisplayPath(file, state.currentScope);
-
   if (originalModel) originalModel.dispose();
   if (modifiedModel) modifiedModel.dispose();
-
   originalModel = monacoApi.editor.createModel(contents.originalContent, language);
   modifiedModel = monacoApi.editor.createModel(contents.modifiedContent, language);
-
   diffEditor.setModel({ original: originalModel, modified: modifiedModel });
   applyEditorOptions();
   syncViewZones();
@@ -885,65 +979,46 @@ function renderAll(options = {}) {
   }
 }
 
-function createGlyphHoverActions(editor, side) {
-  let hoverDecoration = [];
-
-  function openDraftAtLine(line) {
-    const file = activeFile();
-    if (!file || !canCommentOnSide(file, side) || !isActiveFileReady()) return;
-    state.comments.push({
-      id: `${Date.now()}:${Math.random().toString(16).slice(2)}`,
-      fileId: file.id,
-      scope: state.currentScope,
-      commitSha: state.currentScope === "commit" ? state.selectedCommitSha : undefined,
-      side,
-      startLine: line,
-      endLine: line,
-      body: "",
-    });
-    updateCommentsUI();
-    editor.revealLineInCenter(line);
-  }
-
-  editor.onMouseMove((event) => {
-    const file = activeFile();
-    if (!file || !canCommentOnSide(file, side) || !isActiveFileReady()) {
-      hoverDecoration = editor.deltaDecorations(hoverDecoration, []);
-      return;
-    }
-
-    const target = event.target;
-    if (target.type === monacoApi.editor.MouseTargetType.GUTTER_GLYPH_MARGIN || target.type === monacoApi.editor.MouseTargetType.GUTTER_LINE_NUMBERS) {
-      const line = target.position?.lineNumber;
-      if (!line) return;
-      hoverDecoration = editor.deltaDecorations(hoverDecoration, [{
-        range: new monacoApi.Range(line, 1, line, 1),
-        options: { glyphMarginClassName: "review-glyph-plus" },
-      }]);
-    } else {
-      hoverDecoration = editor.deltaDecorations(hoverDecoration, []);
-    }
-  });
-
-  editor.onMouseLeave(() => {
-    hoverDecoration = editor.deltaDecorations(hoverDecoration, []);
-  });
-
-  editor.onMouseDown((event) => {
-    const file = activeFile();
-    if (!file || !canCommentOnSide(file, side) || !isActiveFileReady()) return;
-
-    const target = event.target;
-    if (target.type === monacoApi.editor.MouseTargetType.GUTTER_GLYPH_MARGIN || target.type === monacoApi.editor.MouseTargetType.GUTTER_LINE_NUMBERS) {
-      const line = target.position?.lineNumber;
-      if (!line) return;
-      openDraftAtLine(line);
-    }
-  });
+// ---- 9. Message handlers (host → webview) --------------------------------
+function chooseInitialScope() {
+  if (reviewData.files.some((file) => file.inGitDiff)) return "git-diff";
+  if (reviewData.files.some((file) => file.inLastCommit)) return "last-commit";
+  if (reviewData.commits.length > 0) return "commit";
+  return "all-files";
 }
 
 window.__reviewReceive = function (message) {
   if (!message || typeof message !== "object") return;
+
+  if (message.type === "init") {
+    reviewData.repoRoot = message.repoRoot || "";
+    reviewData.baseBranch = message.baseBranch;
+    reviewData.mergeBase = message.mergeBase;
+    repoRootEl.textContent = reviewData.repoRoot;
+    return;
+  }
+
+  if (message.type === "files") {
+    reviewData.files = message.files || [];
+    reviewData.commits = message.commits || [];
+    state.filesReceived = true;
+    state.selectedCommitSha = reviewData.commits[0]?.sha || null;
+    state.currentScope = chooseInitialScope();
+    if (loadingOverlayEl) loadingOverlayEl.classList.add("hidden");
+    populateCommitSelect();
+    ensureActiveFileForScope();
+    renderTree();
+    renderFileComments();
+    updateSidebarLayout();
+    if (diffEditor && monacoApi) {
+      mountFile({ restoreFileScroll: true });
+      const file = activeFile();
+      if (file) ensureFileLoaded(file.id, state.currentScope);
+    }
+    return;
+  }
+
+  // file-data / file-error
   const previousSelectedCommitSha = state.selectedCommitSha;
   if (message.scope === "commit" && message.commitSha) state.selectedCommitSha = message.commitSha;
   const key = cacheKey(message.scope, message.fileId);
@@ -973,65 +1048,6 @@ window.__reviewReceive = function (message) {
   }
 };
 
-function setupMonaco() {
-  window.require.config({
-    paths: {
-      vs: "https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.52.2/min/vs",
-    },
-  });
-
-  window.require(["vs/editor/editor.main"], function () {
-    monacoApi = window.monaco;
-
-    monacoApi.editor.defineTheme("review-dark", {
-      base: "vs-dark",
-      inherit: true,
-      rules: [],
-      colors: {
-        "editor.background": "#0d1117",
-        "diffEditor.insertedTextBackground": "#2ea04326",
-        "diffEditor.removedTextBackground": "#f8514926",
-      },
-    });
-    monacoApi.editor.setTheme("review-dark");
-
-    diffEditor = monacoApi.editor.createDiffEditor(editorContainerEl, {
-      automaticLayout: true,
-      renderSideBySide: activeFileShowsDiff(),
-      readOnly: true,
-      originalEditable: false,
-      minimap: { enabled: true, renderCharacters: false, showSlider: "always", size: "proportional" },
-      renderOverviewRuler: true,
-      diffWordWrap: "on",
-      scrollBeyondLastLine: false,
-      lineNumbersMinChars: 4,
-      glyphMargin: true,
-      folding: true,
-      lineDecorationsWidth: 10,
-      overviewRulerBorder: false,
-      wordWrap: "on",
-    });
-
-    createGlyphHoverActions(diffEditor.getOriginalEditor(), "original");
-    createGlyphHoverActions(diffEditor.getModifiedEditor(), "modified");
-
-    if (typeof ResizeObserver !== "undefined") {
-      editorResizeObserver = new ResizeObserver(() => {
-        layoutEditor();
-      });
-      editorResizeObserver.observe(editorContainerEl);
-    }
-
-    requestAnimationFrame(() => {
-      layoutEditor();
-      setTimeout(layoutEditor, 50);
-      setTimeout(layoutEditor, 150);
-    });
-
-    mountFile();
-  });
-}
-
 function populateCommitSelect() {
   commitSelectEl.innerHTML = "";
   (reviewData.commits || []).forEach((commit) => {
@@ -1058,6 +1074,7 @@ function switchScope(scope) {
   if (file) ensureFileLoaded(file.id, state.currentScope);
 }
 
+// ---- 10. Event wiring + boot ---------------------------------------------
 submitButton.addEventListener("click", () => {
   syncCommentBodiesFromDOM();
   const payload = {
@@ -1076,13 +1093,8 @@ cancelButton.addEventListener("click", () => {
   window.glimpse.close();
 });
 
-overallCommentButton.addEventListener("click", () => {
-  showOverallCommentModal();
-});
-
-fileCommentButton.addEventListener("click", () => {
-  showFileCommentModal();
-});
+overallCommentButton.addEventListener("click", () => showOverallCommentModal());
+fileCommentButton.addEventListener("click", () => showFileCommentModal());
 
 toggleUnchangedButton.addEventListener("click", () => {
   state.hideUnchanged = !state.hideUnchanged;
@@ -1108,21 +1120,10 @@ toggleReviewedButton.addEventListener("click", () => {
   renderTree();
 });
 
-scopeDiffButton.addEventListener("click", () => {
-  switchScope("git-diff");
-});
-
-scopeLastCommitButton.addEventListener("click", () => {
-  switchScope("last-commit");
-});
-
-scopeCommitButton.addEventListener("click", () => {
-  switchScope("commit");
-});
-
-scopeAllButton.addEventListener("click", () => {
-  switchScope("all-files");
-});
+scopeDiffButton.addEventListener("click", () => switchScope("git-diff"));
+scopeLastCommitButton.addEventListener("click", () => switchScope("last-commit"));
+scopeCommitButton.addEventListener("click", () => switchScope("commit"));
+scopeAllButton.addEventListener("click", () => switchScope("all-files"));
 
 toggleSidebarButton.addEventListener("click", () => {
   state.sidebarCollapsed = !state.sidebarCollapsed;
@@ -1156,9 +1157,11 @@ commitSelectEl.addEventListener("change", () => {
   if (file) ensureFileLoaded(file.id, state.currentScope);
 });
 
-populateCommitSelect();
-ensureActiveFileForScope();
-renderTree();
-renderFileComments();
+// Boot: start Monaco (loads from ./vendor/monaco) and tell the host we are
+// ready to receive `init` + `files` over the channel. The loading overlay
+// stays visible until `files` arrives.
 updateSidebarLayout();
 setupMonaco();
+if (window.glimpse?.send) {
+  window.glimpse.send({ type: "ready" });
+}

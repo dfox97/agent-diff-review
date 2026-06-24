@@ -2,7 +2,6 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 import {
 	composeReviewPrompt,
-	getReviewWindowData,
 	openReviewWindow,
 	type Exec,
 	type OpenReviewWindowHandle,
@@ -89,20 +88,13 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		const data = await getReviewWindowData(exec, ctx.cwd, baseBranch);
-		if (data.files.length === 0) {
-			ctx.ui.notify("No reviewable files found.", "info");
-			return;
-		}
-
-		ctx.ui.notify("Opened native review window.", "info");
-
-		const handle = openReviewWindow(exec, data, {
+		const handle = openReviewWindow(exec, ctx.cwd, baseBranch, {
 			width: 1680,
 			height: 1020,
 			title: "pi review",
 		});
 		activeHandle = handle;
+		ctx.ui.notify("Opened native review window.", "info");
 		const waitingUI = showWaitingUI(ctx);
 		activeWaitingUIDismiss = waitingUI.dismiss;
 
@@ -130,6 +122,7 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
+			const data = await handle.data;
 			const prompt = composeReviewPrompt(data.files, message);
 			ctx.ui.setEditorText(prompt);
 			ctx.ui.notify("Inserted review feedback into the editor.", "info");
