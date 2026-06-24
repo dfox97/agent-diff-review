@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "UserPromptExpansion": [
+      {
+        "matcher": "diff-review",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/diff-review-hook.mjs"],
+            "timeout": 600
+          }
+        ]
+      }
+    ]
+  }
+}

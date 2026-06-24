@@ -9,6 +9,7 @@ This fork works in three ways. In all of them the composed feedback is collected
 - **pi** — install the extension, then type `/diff-review` in the pi editor. The composed feedback is inserted directly into the editor. See [Install](#install) and [Usage](#usage).
 - **opencode** — from the repo root, run `opencode` and type `/diff-review` (or `/diff-review <base>`) in the TUI. The composed feedback is inserted into the chat box as a draft. See [opencode support](#opencode-support).
 - **Standalone CLI** — run outside any AI agent. `diff-review clip` copies the prompt to your clipboard; `diff-review open` writes it to stdout for an agent harness to ingest. See [Standalone CLI](#standalone-cli).
+- **Claude Code** — a `.claude/` plugin (slash command + `UserPromptExpansion` hook) that opens the review window and feeds the composed feedback to Claude, or blocks the turn on cancel. See [Claude Code support](#claude-code-support).
 
 ```bash
 # CLI quick start (from this repo)
@@ -36,6 +37,7 @@ diff-review open --base dev   # agent mode: prompt on stdout, exit 0 only on sub
   - pi: returns early from the command handler before any model call.
   - opencode: throws `__DIFF_REVIEW_ABORT__` from `command.execute.before` to short-circuit the command's automatic LLM call (`TODO: replace with a clean abort when opencode exposes one`).
   - CLI `open`: writes nothing to stdout and exits non-zero.
+  - Claude Code: the `UserPromptExpansion` hook returns `decision: "block"`, so the slash command never expands and no model call is made.
 
 ## How it works on WSL2
 
@@ -260,6 +262,52 @@ To run the opencode binding locally:
 3. Type `/diff-review` (or `/diff-review main`) in the TUI.
 
 The plugin's `command.execute.before` hook fires for `diff-review`, opens the native Glimpse window, awaits submit/cancel, then inserts the composed feedback into the opencode chat box as a draft. The command's automatic LLM call is aborted (`__DIFF_REVIEW_ABORT__`) until opencode exposes a clean abort API.
+
+## Claude Code support
+
+A standalone `.claude/` config in the repo root provides a `/diff-review` slash command plus a `UserPromptExpansion` hook that opens the native review window and translates the result into Claude Code's hook contract.
+
+**Flow:**
+- You type `/diff-review [base]` in Claude Code.
+- The `UserPromptExpansion` hook (`.claude/hooks/diff-review-hook.mjs`) runs `diff-review open` (the same CLI used in agent mode), which opens the native Glimpse window.
+- On **submit-with-content**, the hook returns the composed markdown prompt as `additionalContext`; the slash command expands and Claude acts on the review.
+- On **cancel / close / submit-empty / error**, the hook returns `decision: "block"`; the expansion is blocked and **no LLM call is made**.
+
+This matches the spec's "pure human-input device" rule. Claude Code has no "insert into chat box as draft" API, so the composed feedback is delivered as context that Claude acts on directly — the same delivery channel as the CLI's agent-mode stdout.
+
+### Run locally
+
+From the repo root (the `.claude/` directory is picked up automatically):
+
+```bash
+claude
+```
+
+Then type `/diff-review` (or `/diff-review main`).
+
+Requirements:
+- `diff-review` on `PATH` (`npm link` or `npm i -g pi-diff-review-wsl`), **or** set `DIFF_REVIEW_BIN=/path/to/diff-review`, **or** just build the repo in place — the hook falls back to `node bin/diff-review` when the shim is not on `PATH`.
+- The same platform prerequisites as the CLI (WSL2 + Windows WebView2, native Linux Chromium, or macOS WebKit).
+
+### Files
+
+- `.claude/commands/diff-review.md` — the slash command body (instructions Claude runs once the review is in context).
+- `.claude/settings.json` — registers the `UserPromptExpansion` hook for `command_name: "diff-review"`.
+- `.claude/hooks/diff-review-hook.mjs` — the adapter: wraps `diff-review open`, maps exit-code/stdout to `additionalContext` or `decision: "block"`.
+
+### Promoting to a distributable plugin
+
+The `.claude/` config is the local-test form. To ship it as an installable Claude Code plugin, copy these three files into a `claude-code/` directory and add a manifest:
+
+```
+claude-code/
+  .claude-plugin/plugin.json      # { "name": "diff-review", ... }
+  commands/diff-review.md
+  hooks/hooks.json                 # same hook entry as .claude/settings.json
+  scripts/diff-review-hook.mjs
+```
+
+Then test with `claude --plugin-dir ./claude-code` and distribute via a plugin marketplace.
 
 ## Fixes and workarounds
 
