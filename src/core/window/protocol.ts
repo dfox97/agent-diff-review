@@ -4,6 +4,7 @@ import type {
 	ReviewFileErrorMessage,
 	ReviewFilesMessage,
 	ReviewInitMessage,
+	ReviewOpenInEditorPayload,
 	ReviewReadyPayload,
 	ReviewRequestFilePayload,
 	ReviewSubmitPayload,
@@ -26,6 +27,10 @@ export function isCancel(value: ReviewWindowMessage): value is ReviewCancelPaylo
 
 export function isRequestFile(value: ReviewWindowMessage): value is ReviewRequestFilePayload {
 	return value.type === "request-file";
+}
+
+export function isOpenInEditor(value: ReviewWindowMessage): value is ReviewOpenInEditorPayload {
+	return value.type === "open-in-editor";
 }
 
 // ---- Host → webview message guards ---------------------------------------

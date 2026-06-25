@@ -69,6 +69,7 @@ const cancelButton = document.getElementById("cancel-button");
 const overallCommentButton = document.getElementById("overall-comment-button");
 const fileCommentButton = document.getElementById("file-comment-button");
 const toggleReviewedButton = document.getElementById("toggle-reviewed-button");
+const openInNvimButton = document.getElementById("open-in-nvim-button");
 const toggleUnchangedButton = document.getElementById("toggle-unchanged-button");
 const toggleWrapButton = document.getElementById("toggle-wrap-button");
 const loadingOverlayEl = document.getElementById("review-loading-overlay");
@@ -860,6 +861,7 @@ function updateToggleButtons() {
   toggleWrapButton.textContent = `Wrap lines: ${state.wrapLines ? "on" : "off"}`;
   toggleUnchangedButton.textContent = state.hideUnchanged ? "Show full file" : "Show changed areas only";
   toggleUnchangedButton.style.display = activeFileShowsDiff() ? "inline-flex" : "none";
+  openInNvimButton.disabled = file == null;
   updateScopeButtons();
   modeHintEl.textContent = scopeHint(state.currentScope);
   submitButton.disabled = false;
@@ -1118,6 +1120,17 @@ toggleReviewedButton.addEventListener("click", () => {
   if (!file) return;
   state.reviewedFiles[file.id] = !isFileReviewed(file.id);
   renderTree();
+});
+
+openInNvimButton.addEventListener("click", () => {
+  const file = activeFile();
+  if (!file || !window.glimpse?.send) return;
+  let line = 1;
+  if (diffEditor) {
+    const pos = diffEditor.getModifiedEditor().getPosition();
+    if (pos && pos.lineNumber > 0) line = pos.lineNumber;
+  }
+  window.glimpse.send({ type: "open-in-editor", fileId: file.id, line });
 });
 
 scopeDiffButton.addEventListener("click", () => switchScope("git-diff"));

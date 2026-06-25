@@ -3,13 +3,15 @@ import { resolveLoadFilePath } from "../../platform/resolve-web-dir.js";
 import { getReviewWindowData } from "../git/index.js";
 import { ReviewFileContentCache } from "../git/contents.js";
 import { buildPlaceholderHtml } from "../ui.js";
-import { isCancel, isReady, isRequestFile, isSubmit } from "./protocol.js";
+import { openInEditor } from "../editor.js";
+import { isCancel, isOpenInEditor, isReady, isRequestFile, isSubmit } from "./protocol.js";
 import type { Exec } from "../git/types.js";
 import type {
 	ReviewCancelPayload,
 	ReviewFile,
 	ReviewFileContents,
 	ReviewHostMessage,
+	ReviewOpenInEditorPayload,
 	ReviewRequestFilePayload,
 	ReviewScope,
 	ReviewSubmitPayload,
@@ -219,6 +221,24 @@ function openWindowInternal(
 			}
 		};
 
+		const handleOpenInEditor = async (message: ReviewOpenInEditorPayload): Promise<void> => {
+			let data: ReviewWindowData;
+			try {
+				data = await dataHandled;
+			} catch {
+				return;
+			}
+			const file = fileMap.get(message.fileId);
+			if (file == null) return;
+			// Open the working-tree file (`file.path`); for deleted files the path
+			// won't exist on disk and the editor will open an empty buffer for it.
+			openInEditor({
+				repoRoot: data.repoRoot,
+				relPath: file.path,
+				line: message.line,
+			});
+		};
+
 		const prefetchNext = (
 			data: ReviewWindowData,
 			file: ReviewFile,
@@ -242,6 +262,10 @@ function openWindowInternal(
 			}
 			if (isRequestFile(msg)) {
 				void handleRequestFile(msg);
+				return;
+			}
+			if (isOpenInEditor(msg)) {
+				handleOpenInEditor(msg);
 				return;
 			}
 			if (isSubmit(msg) || isCancel(msg)) {

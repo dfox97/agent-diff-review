@@ -65,6 +65,14 @@ export interface ReviewRequestFilePayload {
 	commitSha?: string;
 }
 
+/** Webview → host: open the active file in an external editor (Neovim). */
+export interface ReviewOpenInEditorPayload {
+	type: "open-in-editor";
+	fileId: string;
+	/** 1-based line to jump to; omitted means "top of file". */
+	line?: number;
+}
+
 /** Sent by the webview once it has booted and registered `__reviewReceive`. */
 export interface ReviewReadyPayload {
 	type: "ready";
@@ -74,6 +82,7 @@ export type ReviewWindowMessage =
 	| ReviewSubmitPayload
 	| ReviewCancelPayload
 	| ReviewRequestFilePayload
+	| ReviewOpenInEditorPayload
 	| ReviewReadyPayload;
 
 /** Host → webview: identifies the repo + base before the file index arrives. */
