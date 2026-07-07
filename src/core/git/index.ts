@@ -18,6 +18,14 @@ import type { ReviewFile, ReviewFileComparison } from "../types.js";
 export type { Exec, ExecOptions, ExecResult } from "./types.js";
 export { getRepoRoot } from "./repo.js";
 export { loadReviewFileContents, ReviewFileContentCache } from "./contents.js";
+export type { BranchInfo, DestructiveActionOptions, RepoActionResult } from "./actions.js";
+export {
+	discardFileChanges,
+	listBranches,
+	restoreFileFromBase,
+	restoreFileFromHead,
+	switchBranch,
+} from "./actions.js";
 
 interface ReviewFileSeed {
 	path: string;
@@ -75,7 +83,7 @@ export interface ReviewWindowDataResult {
 
 /**
  * Build the full review window dataset. Uses one combined
- * `git log --name-status --format=…` invocation for the per-commit file index
+ * `git log --name-status --format=...` invocation for the per-commit file index
  * (Q4-C) instead of a per-commit `diff-tree` spawn storm.
  */
 export async function getReviewWindowData(
@@ -210,6 +218,8 @@ export async function getReviewWindowData(
 
 	return { repoRoot, files, commits, baseBranch, mergeBase };
 }
+
+export const refreshReviewData = getReviewWindowData;
 
 // Keep parseCommitLog exported for callers that want just the commit list.
 export { parseCommitLog } from "./parse.js";

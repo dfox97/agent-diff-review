@@ -1,7 +1,7 @@
 /**
  * Standalone CLI binding for the agent-agnostic diff-review core.
  *
- * Contract (Q9/Q10): the tool is a pure human-input device — it never triggers
+ * Contract (Q9/Q10): the tool is a pure human-input device - it never triggers
  * an LLM. It produces a draft prompt for the human; cancel/close/empty yields
  * no prompt.
  *

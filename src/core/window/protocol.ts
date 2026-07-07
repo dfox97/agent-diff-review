@@ -11,7 +11,7 @@ import type {
 	ReviewWindowMessage,
 } from "../types.js";
 
-// ---- Webview → host message guards ---------------------------------------
+// ---- Webview -> host message guards ---------------------------------------
 
 export function isReady(value: ReviewWindowMessage): value is ReviewReadyPayload {
 	return value.type === "ready";
@@ -33,7 +33,7 @@ export function isOpenInEditor(value: ReviewWindowMessage): value is ReviewOpenI
 	return value.type === "open-in-editor";
 }
 
-// ---- Host → webview message guards ---------------------------------------
+// ---- Host -> webview message guards ---------------------------------------
 
 export function isFileData(value: ReviewFileDataMessage | ReviewFileErrorMessage): value is ReviewFileDataMessage {
 	return value.type === "file-data";

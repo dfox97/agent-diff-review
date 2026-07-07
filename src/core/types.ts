@@ -65,7 +65,7 @@ export interface ReviewRequestFilePayload {
 	commitSha?: string;
 }
 
-/** Webview → host: open the active file in an external editor (Neovim). */
+/** Webview -> host: open the active file in an external editor (Neovim). */
 export interface ReviewOpenInEditorPayload {
 	type: "open-in-editor";
 	fileId: string;
@@ -85,7 +85,7 @@ export type ReviewWindowMessage =
 	| ReviewOpenInEditorPayload
 	| ReviewReadyPayload;
 
-/** Host → webview: identifies the repo + base before the file index arrives. */
+/** Host -> webview: identifies the repo + base before the file index arrives. */
 export interface ReviewInitMessage {
 	type: "init";
 	repoRoot: string;
@@ -93,7 +93,7 @@ export interface ReviewInitMessage {
 	mergeBase?: string;
 }
 
-/** Host → webview: the full file index + commit list, sent after `init`. */
+/** Host -> webview: the full file index + commit list, sent after `init`. */
 export interface ReviewFilesMessage {
 	type: "files";
 	files: ReviewFile[];

@@ -75,7 +75,7 @@ function cacheKey(scope: ReviewScope, commitSha: string | undefined, fileId: str
  * Bounded LRU cache of in-flight + settled file-content loads. Keyed by
  * `scope:commitSha:fileId`. Capped at `cap` entries (default 40); the oldest
  * entry is evicted when the cap is exceeded. Prefetch is just `get` without
- * awaiting — the cache keeps the promise so a subsequent real request reuses
+ * awaiting - the cache keeps the promise so a subsequent real request reuses
  * it.
  */
 export class ReviewFileContentCache {
@@ -107,7 +107,7 @@ export class ReviewFileContentCache {
 		return pending;
 	}
 
-	/** Opportunistic prefetch — primes the cache without awaiting. */
+	/** Opportunistic prefetch - primes the cache without awaiting. */
 	prefetch(file: ReviewFile, scope: ReviewScope, commitSha?: string): void {
 		const key = cacheKey(scope, commitSha, file.id);
 		if (this.entries.has(key)) return;

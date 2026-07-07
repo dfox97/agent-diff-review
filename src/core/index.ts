@@ -1,36 +1,48 @@
 /**
  * Agent-agnostic core for `pi-diff-review-wsl`. Provides the diff-review data
  * pipeline, the prompt composer, and the window orchestrator. Any tool binding
- * (pi, opencode, CLI, …) imports from here and supplies its own
+ * (pi, opencode, CLI, ...) imports from here and supplies its own
  * {@link Exec} implementation.
  */
 
 // Domain + window wire protocol
 export type {
-	ReviewScope,
-	ChangeStatus,
-	ReviewFileComparison,
-	ReviewCommit,
-	ReviewFile,
-	ReviewFileContents,
-	CommentSide,
-	DiffReviewComment,
-	ReviewSubmitPayload,
-	ReviewCancelPayload,
-	ReviewRequestFilePayload,
-	ReviewReadyPayload,
-	ReviewWindowMessage,
-	ReviewInitMessage,
-	ReviewFilesMessage,
-	ReviewFileDataMessage,
-	ReviewFileErrorMessage,
-	ReviewHostMessage,
-	ReviewWindowData,
+  ReviewScope,
+  ChangeStatus,
+  ReviewFileComparison,
+  ReviewCommit,
+  ReviewFile,
+  ReviewFileContents,
+  CommentSide,
+  DiffReviewComment,
+  ReviewSubmitPayload,
+  ReviewCancelPayload,
+  ReviewRequestFilePayload,
+  ReviewReadyPayload,
+  ReviewWindowMessage,
+  ReviewInitMessage,
+  ReviewFilesMessage,
+  ReviewFileDataMessage,
+  ReviewFileErrorMessage,
+  ReviewHostMessage,
+  ReviewWindowData,
 } from "./types.js";
 
 // Git pipeline (with injectable Exec)
 export type { Exec, ExecOptions, ExecResult } from "./git/types.js";
-export { getRepoRoot, getReviewWindowData, loadReviewFileContents, ReviewFileContentCache } from "./git/index.js";
+export type { BranchInfo, DestructiveActionOptions, RepoActionResult } from "./git/index.js";
+export {
+  discardFileChanges,
+  getRepoRoot,
+  getReviewWindowData,
+  listBranches,
+  loadReviewFileContents,
+  refreshReviewData,
+  restoreFileFromBase,
+  restoreFileFromHead,
+  ReviewFileContentCache,
+  switchBranch,
+} from "./git/index.js";
 
 // Markdown prompt composer
 export { composeReviewPrompt } from "./prompt.js";

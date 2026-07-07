@@ -7,7 +7,7 @@ import { isWSL } from "./wsl-glimpse.js";
  * Absolute on-disk path to the packaged `web/` directory.
  *
  * Works in both source (`src/...`) and built (`dist/...`) layouts because this
- * module lives at `<pkgroot>/<src|dist>/platform/resolve-web-dir.ts` — two
+ * module lives at `<pkgroot>/<src|dist>/platform/resolve-web-dir.ts` - two
  * levels below the package root, where `web/` always resides.
  */
 export function resolveWebDir(): string {
@@ -37,9 +37,9 @@ function toWindowsUncPath(posixPath: string): string {
 /**
  * Returns a filesystem path that the native webview's `loadFile` can navigate
  * to for a file inside the packaged `web/` directory. On WSL the web/ directory
- * lives in the Linux filesystem, so we hand back a `\\wsl.localhost\<distro>\…`
+ * lives in the Linux filesystem, so we hand back a `\\wsl.localhost\<distro>\...`
  * UNC path that the Windows WebView2 can resolve (and against which relative
- * `./app.js` / `./vendor/…` refs resolve). On macOS/Linux we return the plain
+ * `./app.js` / `./vendor/...` refs resolve). On macOS/Linux we return the plain
  * absolute path.
  *
  * `relativePath` is relative to `web/` (e.g. `"index.html"`).

@@ -8,22 +8,22 @@ import { isWSL } from "../platform/wsl-glimpse.js";
  * Open a worktree file in Neovim (or `$EDITOR`).
  *
  * The review window runs inside a Glimpse webview whose host process has no
- * usable TTY, so we can't just `spawn("nvim", …)` — it would have nowhere to
+ * usable TTY, so we can't just `spawn("nvim", ...)` - it would have nowhere to
  * render. Instead we pick a launcher in this order:
  *
- *   1. `DIFF_REVIEW_EDITOR_CMD` — a custom shell command string with `%file`
+ *   1. `DIFF_REVIEW_EDITOR_CMD` - a custom shell command string with `%file`
  *      and `%line` placeholders. Total escape hatch.
  *   2. tmux, when `$TMUX` is set and the `tmux` binary is on `PATH`. The host
  *      process inherits the user's tmux socket, so the editor opens inside the
- *      user's *current* tmux session — no separate terminal emulator needed,
+ *      user's *current* tmux session - no separate terminal emulator needed,
  *      works identically on WSL2 and native Linux. This is the common case
  *      because pi/opencode run inside tmux. By default it splits the current
  *      window (`tmux split-window`) so the editor appears next to pi; set
  *      `DIFF_REVIEW_TMUX_MODE=popup` for a floating overlay or `=window` for
  *      a separate tmux window.
- *   3. WSL2 without tmux → Windows Terminal (`wt.exe`) running `wsl bash …`.
- *   4. macOS without tmux → Terminal.app via `osascript`.
- *   5. Linux without tmux → first available terminal emulator.
+ *   3. WSL2 without tmux -> Windows Terminal (`wt.exe`) running `wsl bash ...`.
+ *   4. macOS without tmux -> Terminal.app via `osascript`.
+ *   5. Linux without tmux -> first available terminal emulator.
  *
  * Override the editor binary with `DIFF_REVIEW_EDITOR` / `PI_DIFF_REVIEW_EDITOR`
  * / `EDITOR` (defaults to `nvim`).
@@ -86,11 +86,11 @@ function launchWithCustomTemplate(template: string, absPath: string, line: numbe
 
 /**
  * How to open the editor inside tmux:
- *   - "split"  → `tmux split-window` (default): new pane in the *same* window
+ *   - "split"  -> `tmux split-window` (default): new pane in the *same* window
  *     as pi, so the editor is right next to the TUI.
- *   - "popup"  → `tmux popup` (tmux 3.2+): floating overlay on the current
+ *   - "popup"  -> `tmux popup` (tmux 3.2+): floating overlay on the current
  *     pane; closes automatically when the editor exits, leaving pi untouched.
- *   - "window" → `tmux new-window`: a separate tmux window in the session.
+ *   - "window" -> `tmux new-window`: a separate tmux window in the session.
  *
  * Override with `DIFF_REVIEW_TMUX_MODE`. Defaults to "split".
  */

@@ -146,7 +146,7 @@ function openWindowInternal(
 			// The glimpse window finished loading the placeholder. Swap in the
 			// real review page from disk so relative refs to app.js / vendor
 			// resolve. Only do this once; subsequent `ready` events (e.g. after
-			// the real page loads) are ignored — we wait for the app's `ready`
+			// the real page loads) are ignored - we wait for the app's `ready`
 			// message instead.
 			if (realPageLoaded) return;
 			realPageLoaded = true;

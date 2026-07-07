@@ -7,7 +7,7 @@
  *   2. A `command.execute.before` hook so when the user types
  *      `/diff-review [base]` directly in the TUI, the diff window opens
  *      and the composed feedback is dropped into the chat box as a draft
- *      for the user to review and send — matching the pi binding's
+ *      for the user to review and send - matching the pi binding's
  *      "insert into the editor" UX.
  */
 
@@ -54,7 +54,7 @@ function makeExec(): Exec {
 			});
 		} catch (err) {
 			// Bun.spawn throws synchronously if the binary can't be exec'd
-			// (ENOENT, EACCES, …). Surface as a 127-style result so callers
+			// (ENOENT, EACCES, ...). Surface as a 127-style result so callers
 			// see the same shape they see for any other failure.
 			const message = err instanceof Error ? err.message : String(err);
 			return { code: 127, stdout: "", stderr: message };
