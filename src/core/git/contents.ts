@@ -1,17 +1,41 @@
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { lstat, readFile } from "node:fs/promises";
+import { joinRepoPath, requireSafeRepoRelativePath } from "../path-safety.js";
 import type { Exec } from "./types.js";
 import type { ReviewFile, ReviewFileContents, ReviewScope } from "../types.js";
 
+const MAX_REVIEW_FILE_BYTES = 1_000_000;
+
+function omitted(path: string, reason: string): string {
+	return `[${path} omitted from review: ${reason}]`;
+}
+
+function tooLarge(path: string): string {
+	return omitted(path, `file is larger than ${MAX_REVIEW_FILE_BYTES} bytes`);
+}
+
+function isTooLarge(size: number): boolean {
+	return Number.isFinite(size) && size > MAX_REVIEW_FILE_BYTES;
+}
+
 async function getRevisionContent(exec: Exec, repoRoot: string, revision: string, path: string): Promise<string> {
-	const result = await exec("git", ["show", `${revision}:${path}`], { cwd: repoRoot });
-	if (result.code !== 0) return "";
-	return result.stdout;
+	const safePath = requireSafeRepoRelativePath(path);
+	const spec = `${revision}:${safePath}`;
+	const sizeResult = await exec("git", ["cat-file", "-s", spec], { cwd: repoRoot });
+	if (sizeResult.code !== 0) return "";
+	if (isTooLarge(Number(sizeResult.stdout.trim()))) return tooLarge(safePath);
+
+	const result = await exec("git", ["show", spec], { cwd: repoRoot });
+	return result.code === 0 ? result.stdout : "";
 }
 
 async function getWorkingTreeContent(repoRoot: string, path: string): Promise<string> {
 	try {
-		return await readFile(join(repoRoot, path), "utf8");
+		const safePath = requireSafeRepoRelativePath(path);
+		const fullPath = joinRepoPath(repoRoot, safePath);
+		const stat = await lstat(fullPath);
+		if (stat.isSymbolicLink()) return omitted(safePath, "symlink");
+		if (!stat.isFile()) return omitted(safePath, "not a regular file");
+		return isTooLarge(stat.size) ? tooLarge(safePath) : readFile(fullPath, "utf8");
 	} catch {
 		return "";
 	}

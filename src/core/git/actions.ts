@@ -1,3 +1,4 @@
+import { requireSafeRepoRelativePath } from "../path-safety.js";
 import { getMergeBase, runGit, runGitAllowFailure } from "./repo.js";
 import type { Exec } from "./types.js";
 
@@ -22,15 +23,6 @@ export interface DestructiveActionOptions {
 	confirmed: true;
 }
 
-function requireSafeRelativePath(path: string): string {
-	const normalized = path.replace(/\\/g, "/").trim();
-	if (normalized.length === 0) throw new Error("Path is required.");
-	if (normalized.startsWith("/") || normalized.includes("..")) {
-		throw new Error(`Refusing to operate on unsafe path: ${path}`);
-	}
-	return normalized;
-}
-
 function requireSafeBranchName(branch: string): string {
 	const normalized = branch.trim();
 	if (normalized.length === 0) throw new Error("Branch is required.");
@@ -48,6 +40,10 @@ async function hasDirtyWorkingTree(exec: Exec, repoRoot: string): Promise<boolea
 async function isTrackedPath(exec: Exec, repoRoot: string, path: string): Promise<boolean> {
 	const result = await exec("git", ["ls-files", "--error-unmatch", "--", path], { cwd: repoRoot });
 	return result.code === 0;
+}
+
+function requireConfirmation(options: DestructiveActionOptions, action: string): void {
+	if (options.confirmed !== true) throw new Error(`${action} requires explicit confirmation.`);
 }
 
 function parseBranchLine(line: string): BranchInfo | null {
@@ -106,8 +102,8 @@ export async function discardFileChanges(
 	path: string,
 	options: DestructiveActionOptions,
 ): Promise<RepoActionResult> {
-	if (options.confirmed !== true) throw new Error("Discard requires explicit confirmation.");
-	const safePath = requireSafeRelativePath(path);
+	requireConfirmation(options, "Discard");
+	const safePath = requireSafeRepoRelativePath(path);
 	await runGitAllowFailure(exec, repoRoot, ["restore", "--staged", "--", safePath]);
 	if (await isTrackedPath(exec, repoRoot, safePath)) {
 		await runGit(exec, repoRoot, ["restore", "--", safePath]);
@@ -123,8 +119,8 @@ export async function restoreFileFromHead(
 	path: string,
 	options: DestructiveActionOptions,
 ): Promise<RepoActionResult> {
-	if (options.confirmed !== true) throw new Error("Restore requires explicit confirmation.");
-	const safePath = requireSafeRelativePath(path);
+	requireConfirmation(options, "Restore");
+	const safePath = requireSafeRepoRelativePath(path);
 	await runGit(exec, repoRoot, ["restore", "--source=HEAD", "--staged", "--worktree", "--", safePath]);
 	return { ok: true, message: `Restored ${safePath} from HEAD.` };
 }
@@ -136,8 +132,8 @@ export async function restoreFileFromBase(
 	baseBranch: string,
 	options: DestructiveActionOptions,
 ): Promise<RepoActionResult> {
-	if (options.confirmed !== true) throw new Error("Restore requires explicit confirmation.");
-	const safePath = requireSafeRelativePath(path);
+	requireConfirmation(options, "Restore");
+	const safePath = requireSafeRepoRelativePath(path);
 	const mergeBase = await getMergeBase(exec, repoRoot, baseBranch);
 	if (mergeBase == null) throw new Error(`Could not find merge base for ${baseBranch}.`);
 	await runGit(exec, repoRoot, ["restore", `--source=${mergeBase}`, "--staged", "--worktree", "--", safePath]);

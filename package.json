@@ -30,6 +30,8 @@
   ],
   "scripts": {
     "check": "tsgo --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "build": "tsgo -p tsconfig.build.json",
     "dev:window": "tsx scripts/dev-window.ts",
     "vendor": "node scripts/vendor.mjs",
@@ -54,6 +56,7 @@
     "@types/node": "^24.5.2",
     "@typescript/native-preview": "^7.0.0-dev.20260313.1",
     "tsx": "^4.19.0",
-    "typescript": "^5.9.2"
+    "typescript": "^5.9.2",
+    "vitest": "^4.1.10"
   }
 }
