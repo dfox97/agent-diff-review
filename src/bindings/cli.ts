@@ -19,6 +19,8 @@
 
 import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
 	composeReviewPrompt,
 	isWSL,
@@ -99,19 +101,21 @@ async function copyToClipboard(text: string): Promise<void> {
 	);
 }
 
-interface ParsedArgs {
+export interface ParsedArgs {
 	subcommand: "open" | "clip";
 	baseBranch: string | undefined;
 	outPath: string | undefined;
 	help: boolean;
+	errors: string[];
 }
 
-function parseArgs(argv: string[]): ParsedArgs {
+export function parseArgs(argv: string[]): ParsedArgs {
 	const rest = [...argv];
 	let subcommand: "open" | "clip" | undefined;
 	let baseBranch: string | undefined;
 	let outPath: string | undefined;
 	let help = false;
+	const errors: string[] = [];
 
 	const first = rest.shift();
 	if (first === "open" || first === "clip") {
@@ -126,19 +130,37 @@ function parseArgs(argv: string[]): ParsedArgs {
 		if (arg === "--help" || arg === "-h") {
 			help = true;
 		} else if (arg === "--base") {
-			baseBranch = rest[++i];
+			const value = rest[i + 1];
+			if (value == null || value.startsWith("-")) {
+				errors.push("Missing value for --base.");
+			} else {
+				baseBranch = value;
+				i += 1;
+			}
 		} else if (arg.startsWith("--base=")) {
-			baseBranch = arg.slice("--base=".length);
+			const value = arg.slice("--base=".length);
+			if (value.length === 0) errors.push("Missing value for --base.");
+			else baseBranch = value;
 		} else if (arg === "--out") {
-			outPath = rest[++i];
+			const value = rest[i + 1];
+			if (value == null || value.startsWith("-")) {
+				errors.push("Missing value for --out.");
+			} else {
+				outPath = value;
+				i += 1;
+			}
 		} else if (arg.startsWith("--out=")) {
-			outPath = arg.slice("--out=".length);
-		} else if (!arg.startsWith("-") && baseBranch == null) {
+			const value = arg.slice("--out=".length);
+			if (value.length === 0) errors.push("Missing value for --out.");
+			else outPath = value;
+		} else if (arg.startsWith("-")) {
+			errors.push(`Unknown flag: ${arg}`);
+		} else if (baseBranch == null) {
 			baseBranch = arg;
 		}
 	}
 
-	return { subcommand: subcommand ?? "clip", baseBranch, outPath, help };
+	return { subcommand: subcommand ?? "clip", baseBranch, outPath, help, errors };
 }
 
 function printUsage(): void {
@@ -218,10 +240,15 @@ async function runClipMode(exec: Exec, cwd: string, baseBranch: string | undefin
 }
 
 async function main(): Promise<void> {
-	const { subcommand, baseBranch, outPath, help } = parseArgs(process.argv.slice(2));
+	const { subcommand, baseBranch, outPath, help, errors } = parseArgs(process.argv.slice(2));
 	if (help) {
 		printUsage();
 		return;
+	}
+	if (errors.length > 0) {
+		for (const error of errors) console.error(error);
+		console.error("Run diff-review --help for usage.");
+		process.exit(1);
 	}
 
 	const exec = makeExec();
@@ -232,4 +259,6 @@ async function main(): Promise<void> {
 	process.exit(code);
 }
 
-void main();
+if (process.argv[1] != null && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+	void main();
+}

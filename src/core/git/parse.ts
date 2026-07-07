@@ -8,47 +8,45 @@ export interface ChangedPath {
 }
 
 /** Parse `git diff --name-status` / `git diff-tree --name-status` output. */
-export function parseNameStatus(output: string): ChangedPath[] {
-	const lines = output
-		.split(/\r?\n/)
-		.map((line) => line.trim())
-		.filter((line) => line.length > 0);
+function parseNameStatusLine(line: string): ChangedPath | null {
+	const parts = line.split("\t");
+	const rawStatus = parts[0] ?? "";
+	const code = rawStatus[0];
 
-	const changes: ChangedPath[] = [];
-
-	for (const line of lines) {
-		const parts = line.split("\t");
-		const rawStatus = parts[0] ?? "";
-		const code = rawStatus[0];
-
-		if (code === "R" || code === "C") {
-			const oldPath = parts[1] ?? null;
-			const newPath = parts[2] ?? null;
-			if (oldPath != null && newPath != null) {
-				changes.push({ status: code === "R" ? "renamed" : "modified", oldPath, newPath });
-			}
-			continue;
+	if (code === "R" || code === "C") {
+		const oldPath = parts[1] ?? null;
+		const newPath = parts[2] ?? null;
+		if (oldPath != null && newPath != null) {
+			return { status: code === "R" ? "renamed" : "modified", oldPath, newPath };
 		}
-
-		if (code === "M") {
-			const path = parts[1] ?? null;
-			if (path != null) changes.push({ status: "modified", oldPath: path, newPath: path });
-			continue;
-		}
-
-		if (code === "A") {
-			const path = parts[1] ?? null;
-			if (path != null) changes.push({ status: "added", oldPath: null, newPath: path });
-			continue;
-		}
-
-		if (code === "D") {
-			const path = parts[1] ?? null;
-			if (path != null) changes.push({ status: "deleted", oldPath: path, newPath: null });
-		}
+		return null;
 	}
 
-	return changes;
+	if (code === "M") {
+		const path = parts[1] ?? null;
+		return path != null ? { status: "modified", oldPath: path, newPath: path } : null;
+	}
+
+	if (code === "A") {
+		const path = parts[1] ?? null;
+		return path != null ? { status: "added", oldPath: null, newPath: path } : null;
+	}
+
+	if (code === "D") {
+		const path = parts[1] ?? null;
+		return path != null ? { status: "deleted", oldPath: path, newPath: null } : null;
+	}
+
+	return null;
+}
+
+export function parseNameStatus(output: string): ChangedPath[] {
+	return output
+		.split(/\r?\n/)
+		.map((line) => line.trim())
+		.filter((line) => line.length > 0)
+		.map(parseNameStatusLine)
+		.filter((change): change is ChangedPath => change != null);
 }
 
 /** Parse `git ls-files --others --exclude-standard` (one path per line). */
@@ -124,31 +122,8 @@ export function parseCommitLogWithNameStatus(output: string): CommitLogWithNameS
 		}
 
 		if (current == null) continue;
-		const parts = line.split("\t");
-		const code = (parts[0] ?? "")[0];
-
-		if (code === "R" || code === "C") {
-			const oldPath = parts[1] ?? null;
-			const newPath = parts[2] ?? null;
-			if (oldPath != null && newPath != null) {
-				current.changes.push({ status: code === "R" ? "renamed" : "modified", oldPath, newPath });
-			}
-			continue;
-		}
-		if (code === "M") {
-			const path = parts[1] ?? null;
-			if (path != null) current.changes.push({ status: "modified", oldPath: path, newPath: path });
-			continue;
-		}
-		if (code === "A") {
-			const path = parts[1] ?? null;
-			if (path != null) current.changes.push({ status: "added", oldPath: null, newPath: path });
-			continue;
-		}
-		if (code === "D") {
-			const path = parts[1] ?? null;
-			if (path != null) current.changes.push({ status: "deleted", oldPath: path, newPath: null });
-		}
+		const change = parseNameStatusLine(line);
+		if (change != null) current.changes.push(change);
 	}
 
 	return entries.filter((entry) => entry.sha.length > 0);
