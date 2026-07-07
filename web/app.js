@@ -22,6 +22,7 @@
  * ========================================================================== */
 
 const { createReviewData, createReviewState } = window.DiffReviewState;
+const { escapeHtml } = window.DiffReviewHtml;
 const { getBaseName, normalizeQuery, scoreFilePath } = window.DiffReviewFileSearch;
 const {
   buildTree,
@@ -37,6 +38,7 @@ const {
 const ReviewActions = window.DiffReviewActions;
 const Host = window.DiffReviewHost;
 const ReviewMonaco = window.DiffReviewMonaco;
+const { showTextModal } = window.DiffReviewModal;
 
 // ---- 1. State -------------------------------------------------------------
 const reviewData = createReviewData();
@@ -80,179 +82,45 @@ let originalDecorations = [];
 let modifiedDecorations = [];
 let activeViewZones = [];
 let editorResizeObserver = null;
-let requestSequence = 0;
 
-// ---- 3. Pure helpers ------------------------------------------------------
-function escapeHtml(value) {
-  return String(value)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/\"/g, "&quot;");
-}
+// ---- 3. Data access + pure helpers ---------------------------------------
+const dataAccess = window.DiffReviewDataAccess.createDataAccess({
+  reviewData,
+  state,
+  normalizeQuery,
+  scoreFilePath,
+});
+const {
+  activeComparison,
+  activeFile,
+  activeFileShowsDiff,
+  cacheKey,
+  canCommentOnSide,
+  ensureActiveFileForScope,
+  getActiveStatus,
+  getFileSearchPath,
+  getFilteredFiles,
+  getRequestState,
+  getScopeDisplayPath,
+  getScopeFilePath,
+  getScopedFiles,
+  isActiveFileReady,
+  isFileReviewed,
+  scopeHint,
+  scopeLabel,
+  scrollKey,
+  statusBadgeClass,
+  statusLabel,
+} = dataAccess;
 
-function scopeLabel(scope) {
-  switch (scope) {
-    case "git-diff": return reviewData.baseBranch ? `Branch diff vs ${reviewData.baseBranch}` : "Git diff";
-    case "last-commit": return "Last commit";
-    case "commit": return "Commit history";
-    default: return "All files";
-  }
-}
-
-function scopeHint(scope) {
-  switch (scope) {
-    case "git-diff":
-      return reviewData.baseBranch
-        ? `Review all branch changes against ${reviewData.baseBranch}. Hover or click line numbers in the gutter to add an inline comment.`
-        : "Review working tree changes against HEAD. Hover or click line numbers in the gutter to add an inline comment.";
-    case "last-commit":
-      return "Review the last commit against its parent. Hover or click line numbers in the gutter to add an inline comment.";
-    case "commit":
-      return "Review the selected past commit against its parent. Use the commit dropdown in the sidebar to move through history.";
-    default:
-      return "Review the current working tree snapshot. Hover or click line numbers in the gutter to add a code review comment.";
-  }
-}
-
-function statusLabel(status) {
-  if (!status) return "";
-  return status.charAt(0).toUpperCase() + status.slice(1);
-}
-
-function statusBadgeClass(status) {
-  switch (status) {
-    case "added": return "text-[#3fb950]";
-    case "deleted": return "text-[#f85149]";
-    case "renamed": return "text-[#d29922]";
-    default: return "text-[#58a6ff]";
-  }
-}
-
-function isFileReviewed(fileId) {
-  return state.reviewedFiles[fileId] === true;
-}
-
-// ---- 4. Git-data access ---------------------------------------------------
-function getScopedFiles() {
-  switch (state.currentScope) {
-    case "git-diff":
-      return reviewData.files.filter((file) => file.inGitDiff);
-    case "last-commit":
-      return reviewData.files.filter((file) => file.inLastCommit);
-    case "commit":
-      return reviewData.files.filter((file) => state.selectedCommitSha && file.commitComparisons?.[state.selectedCommitSha]);
-    default:
-      return reviewData.files.filter((file) => file.hasWorkingTreeFile);
-  }
-}
-
-function ensureActiveFileForScope() {
-  const scopedFiles = getScopedFiles();
-  if (scopedFiles.length === 0) {
-    state.activeFileId = null;
-    return;
-  }
-  if (scopedFiles.some((file) => file.id === state.activeFileId)) return;
-  state.activeFileId = scopedFiles[0].id;
-}
-
-function activeFile() {
-  return reviewData.files.find((file) => file.id === state.activeFileId) ?? null;
-}
-
-function getScopeComparison(file, scope = state.currentScope) {
-  if (!file) return null;
-  if (scope === "git-diff") return file.gitDiff;
-  if (scope === "last-commit") return file.lastCommit;
-  if (scope === "commit") return state.selectedCommitSha ? file.commitComparisons?.[state.selectedCommitSha] ?? null : null;
-  return null;
-}
-
-function activeComparison() {
-  return getScopeComparison(activeFile(), state.currentScope);
-}
-
-function activeFileShowsDiff() {
-  return activeComparison() != null;
-}
-
-function getScopeFilePath(file) {
-  const comparison = getScopeComparison(file, state.currentScope);
-  return comparison?.newPath || comparison?.oldPath || file?.path || "";
-}
-
-function getScopeDisplayPath(file, scope = state.currentScope) {
-  const comparison = getScopeComparison(file, scope);
-  return comparison?.displayPath || file?.path || "";
-}
-
-function getFileSearchPath(file) {
-  return file?.path || "";
-}
-
-function getActiveStatus(file) {
-  const comparison = getScopeComparison(file, state.currentScope);
-  return comparison?.status ?? file?.worktreeStatus ?? null;
-}
-
-function getFileSearchScore(query, file) {
-  const normalizedQuery = normalizeQuery(query);
-  if (!normalizedQuery) return 0;
-  return scoreFilePath(normalizedQuery, getFileSearchPath(file));
-}
-
-function getFilteredFiles() {
-  const scopedFiles = getScopedFiles();
-  const query = state.fileFilter.trim();
-  if (!query) return [...scopedFiles];
-  return scopedFiles
-    .map((file) => ({ file, score: getFileSearchScore(query, file) }))
-    .filter((entry) => entry.score >= 0)
-    .sort((a, b) => {
-      if (b.score !== a.score) return b.score - a.score;
-      return getFileSearchPath(a.file).localeCompare(getFileSearchPath(b.file));
-    })
-    .map((entry) => entry.file);
-}
-
-function scopeInstanceKey(scope) {
-  return scope === "commit" ? `${scope}:${state.selectedCommitSha || ""}` : scope;
-}
-
-function cacheKey(scope, fileId) {
-  return `${scopeInstanceKey(scope)}:${fileId}`;
-}
-
-function scrollKey(scope, fileId) {
-  return `${scopeInstanceKey(scope)}:${fileId}`;
-}
-
-function getRequestState(fileId, scope = state.currentScope) {
-  const key = cacheKey(scope, fileId);
-  return {
-    contents: state.fileContents[key],
-    error: state.fileErrors[key],
-    requestId: state.pendingRequestIds[key],
-  };
-}
-
-function ensureFileLoaded(fileId, scope = state.currentScope) {
-  if (!fileId) return;
-  const key = cacheKey(scope, fileId);
-  if (state.fileContents[key] != null) return;
-  if (state.fileErrors[key] != null) return;
-  if (state.pendingRequestIds[key] != null) return;
-  const requestId = `request:${Date.now()}:${++requestSequence}`;
-  state.pendingRequestIds[key] = requestId;
-  renderTree();
-  Host.requestFile(ReviewActions.createFileRequest({
-    requestId,
-    fileId,
-    scope,
-    commitSha: scope === "commit" ? state.selectedCommitSha : undefined,
-  }));
-}
+// ---- 4. File loading / selection -----------------------------------------
+const { ensureFileLoaded } = window.DiffReviewFileLoader.createFileLoader({
+  state,
+  Host,
+  ReviewActions,
+  cacheKey,
+  onRequestQueued: () => renderTree(),
+});
 
 function openFile(fileId) {
   if (state.activeFileId === fileId) {
@@ -263,20 +131,6 @@ function openFile(fileId) {
   state.activeFileId = fileId;
   renderAll({ restoreFileScroll: true });
   ensureFileLoaded(fileId, state.currentScope);
-}
-
-function canCommentOnSide(file, side) {
-  if (!file) return false;
-  const comparison = activeComparison();
-  if (side === "original") return comparison != null && comparison.hasOriginal;
-  return comparison != null ? comparison.hasModified : file.hasWorkingTreeFile;
-}
-
-function isActiveFileReady() {
-  const file = activeFile();
-  if (!file) return false;
-  const requestState = getRequestState(file.id, state.currentScope);
-  return requestState.contents != null && requestState.error == null;
 }
 
 // ---- 5. Monaco glue -------------------------------------------------------
@@ -484,34 +338,6 @@ function setupMonaco() {
 }
 
 // ---- 6. Comment model + modals -------------------------------------------
-function showTextModal(options) {
-  const backdrop = document.createElement("div");
-  backdrop.className = "review-modal-backdrop";
-  backdrop.innerHTML = `
-    <div class="review-modal-card">
-      <div class="mb-2 text-base font-semibold text-white">${escapeHtml(options.title)}</div>
-      <div class="mb-4 text-sm text-review-muted">${escapeHtml(options.description)}</div>
-      <textarea id="review-modal-text" class="scrollbar-thin min-h-48 w-full resize-y rounded-md border border-review-border bg-[#010409] px-3 py-2 text-sm text-review-text outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500">${escapeHtml(options.initialValue ?? "")}</textarea>
-      <div class="mt-4 flex justify-end gap-2">
-        <button id="review-modal-cancel" class="cursor-pointer rounded-md border border-review-border bg-review-panel px-4 py-2 text-sm font-medium text-review-text hover:bg-[#21262d]">Cancel</button>
-        <button id="review-modal-save" class="cursor-pointer rounded-md border border-[rgba(240,246,252,0.1)] bg-[#238636] px-4 py-2 text-sm font-medium text-white hover:bg-[#2ea043]">${escapeHtml(options.saveLabel ?? "Save")}</button>
-      </div>
-    </div>
-  `;
-  document.body.appendChild(backdrop);
-  const textarea = backdrop.querySelector("#review-modal-text");
-  const close = () => backdrop.remove();
-  backdrop.querySelector("#review-modal-cancel").addEventListener("click", close);
-  backdrop.querySelector("#review-modal-save").addEventListener("click", () => {
-    options.onSave(textarea.value.trim());
-    close();
-  });
-  backdrop.addEventListener("click", (event) => {
-    if (event.target === backdrop) close();
-  });
-  textarea.focus();
-}
-
 function showOverallCommentModal() {
   showTextModal({
     title: "Overall review note",
@@ -621,102 +447,49 @@ function renderFileComments() {
 }
 
 // ---- 7. Sidebar / tree rendering -----------------------------------------
-function createTreeRenderOptions() {
-  return {
-    container: fileTreeEl,
-    state,
-    countComments: (file) => countCommentsForFile(state.comments, file.id, state.currentScope, state.selectedCommitSha),
-    escapeHtml,
-    getBaseName,
-    getPath: getFileSearchPath,
-    getRequestState: (fileId) => getRequestState(fileId, state.currentScope),
-    getStatus: getActiveStatus,
-    isFileReviewed,
-    onOpenFile: openFile,
-    onToggleDirectory: renderTree,
-    statusBadgeClass,
-    statusLabel,
-  };
-}
-
-function updateSidebarLayout() {
-  const collapsed = state.sidebarCollapsed;
-  sidebarEl.style.width = collapsed ? "0px" : "280px";
-  sidebarEl.style.minWidth = collapsed ? "0px" : "280px";
-  sidebarEl.style.flexBasis = collapsed ? "0px" : "280px";
-  sidebarEl.style.borderRightWidth = collapsed ? "0px" : "1px";
-  sidebarEl.style.pointerEvents = collapsed ? "none" : "auto";
-  toggleSidebarButton.textContent = collapsed ? "Show sidebar" : "Hide sidebar";
-}
-
-function updateScopeButtons() {
-  const counts = {
-    diff: reviewData.files.filter((file) => file.inGitDiff).length,
-    lastCommit: reviewData.files.filter((file) => file.inLastCommit).length,
-    commit: state.selectedCommitSha ? reviewData.files.filter((file) => file.commitComparisons?.[state.selectedCommitSha]).length : 0,
-    all: reviewData.files.filter((file) => file.hasWorkingTreeFile).length,
-  };
-  const applyButtonClasses = (button, active, disabled) => {
-    button.disabled = disabled;
-    button.className = disabled
-      ? "cursor-default rounded-md border border-review-border bg-[#11161d] px-2.5 py-1 text-[11px] font-medium text-review-muted opacity-60"
-      : active
-        ? "cursor-pointer rounded-md border border-[#2ea043]/40 bg-[#238636]/15 px-2.5 py-1 text-[11px] font-medium text-[#3fb950] hover:bg-[#238636]/25"
-        : "cursor-pointer rounded-md border border-review-border bg-review-panel px-2.5 py-1 text-[11px] font-medium text-review-text hover:bg-[#21262d]";
-  };
-  scopeDiffButton.textContent = `${scopeLabel("git-diff")}${counts.diff > 0 ? ` (${counts.diff})` : ""}`;
-  scopeLastCommitButton.textContent = `Last commit${counts.lastCommit > 0 ? ` (${counts.lastCommit})` : ""}`;
-  scopeCommitButton.textContent = `Commits${counts.commit > 0 ? ` (${counts.commit})` : ""}`;
-  scopeAllButton.textContent = `All files${counts.all > 0 ? ` (${counts.all})` : ""}`;
-  applyButtonClasses(scopeDiffButton, state.currentScope === "git-diff", counts.diff === 0);
-  applyButtonClasses(scopeLastCommitButton, state.currentScope === "last-commit", counts.lastCommit === 0);
-  applyButtonClasses(scopeCommitButton, state.currentScope === "commit", !state.selectedCommitSha || counts.commit === 0);
-  applyButtonClasses(scopeAllButton, state.currentScope === "all-files", counts.all === 0);
-  commitSelectEl.className = state.currentScope === "commit"
-    ? "mb-3 block w-full rounded-md border border-review-border bg-review-panel px-2 py-2 text-xs text-review-text outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-    : "mb-3 hidden w-full rounded-md border border-review-border bg-review-panel px-2 py-2 text-xs text-review-text outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500";
-}
-
-function updateToggleButtons() {
-  const file = activeFile();
-  const reviewed = file ? isFileReviewed(file.id) : false;
-  toggleReviewedButton.textContent = reviewed ? "Reviewed" : "Mark reviewed";
-  toggleReviewedButton.className = reviewed
-    ? "cursor-pointer rounded-md border border-[#2ea043]/40 bg-[#238636]/15 px-3 py-1 text-xs font-medium text-[#3fb950] hover:bg-[#238636]/25"
-    : "cursor-pointer rounded-md border border-review-border bg-review-panel px-3 py-1 text-xs font-medium text-review-text hover:bg-[#21262d]";
-  toggleWrapButton.textContent = `Wrap lines: ${state.wrapLines ? "on" : "off"}`;
-  toggleUnchangedButton.textContent = state.hideUnchanged ? "Show full file" : "Show changed areas only";
-  toggleUnchangedButton.style.display = activeFileShowsDiff() ? "inline-flex" : "none";
-  openInNvimButton.disabled = file == null;
-  updateScopeButtons();
-  modeHintEl.textContent = scopeHint(state.currentScope);
-  submitButton.disabled = false;
-}
+const sidebarRenderer = window.DiffReviewSidebar.createSidebarRenderer({
+  activeFile,
+  activeFileShowsDiff,
+  buildTree,
+  commitSelectEl,
+  countCommentsForFile,
+  ensureActiveFileForScope,
+  escapeHtml,
+  fileTreeEl,
+  getActiveStatus,
+  getBaseName,
+  getFileSearchPath,
+  getFilteredFiles,
+  getRequestState,
+  getScopedFiles,
+  isFileReviewed,
+  modeHintEl,
+  onOpenFile: openFile,
+  openInNvimButton,
+  renderSearchResultRows,
+  renderTreeRows,
+  reviewData,
+  scopeAllButton,
+  scopeCommitButton,
+  scopeDiffButton,
+  scopeHint,
+  scopeLabel,
+  scopeLastCommitButton,
+  sidebarEl,
+  sidebarTitleEl,
+  state,
+  statusBadgeClass,
+  statusLabel,
+  submitButton,
+  summaryEl,
+  toggleReviewedButton,
+  toggleSidebarButton,
+  toggleUnchangedButton,
+  toggleWrapButton,
+});
+const { populateCommitSelect, renderTree, updateSidebarLayout, updateToggleButtons } = sidebarRenderer;
 
 // ---- 8. Rendering orchestration ------------------------------------------
-function renderTree() {
-  ensureActiveFileForScope();
-  fileTreeEl.innerHTML = "";
-  const scopedFiles = getScopedFiles();
-  const visibleFiles = getFilteredFiles();
-  if (visibleFiles.length === 0) {
-    const message = state.fileFilter.trim()
-      ? `No files match <span class="text-review-text">${escapeHtml(state.fileFilter.trim())}</span>.`
-      : `No files in <span class="text-review-text">${escapeHtml(scopeLabel(state.currentScope).toLowerCase())}</span>.`;
-    fileTreeEl.innerHTML = `<div class="px-3 py-4 text-sm text-review-muted">${message}</div>`;
-  } else if (state.fileFilter.trim()) {
-    renderSearchResultRows(visibleFiles, createTreeRenderOptions());
-  } else {
-    renderTreeRows(buildTree(visibleFiles, getFileSearchPath), 0, createTreeRenderOptions());
-  }
-  sidebarTitleEl.textContent = scopeLabel(state.currentScope);
-  const comments = state.comments.length;
-  const filteredSuffix = state.fileFilter.trim() ? ` - ${visibleFiles.length} shown` : "";
-  summaryEl.textContent = `${scopedFiles.length} file(s) - ${comments} comment(s)${state.overallComment ? " - overall note" : ""}${filteredSuffix}`;
-  updateToggleButtons();
-  updateSidebarLayout();
-}
-
 function getPlaceholderContents(file, scope) {
   const path = getScopeDisplayPath(file, scope);
   const requestState = getRequestState(file.id, scope);
@@ -876,16 +649,6 @@ window.__reviewReceive = function (message) {
   }
 };
 
-function populateCommitSelect() {
-  commitSelectEl.innerHTML = "";
-  (reviewData.commits || []).forEach((commit) => {
-    const option = document.createElement("option");
-    option.value = commit.sha;
-    option.textContent = `${commit.shortSha} ${commit.subject}`;
-    commitSelectEl.appendChild(option);
-  });
-  if (state.selectedCommitSha) commitSelectEl.value = state.selectedCommitSha;
-}
 
 function switchScope(scope) {
   const hasScopeFiles = {
