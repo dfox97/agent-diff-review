@@ -23,6 +23,34 @@
     return monacoApi.editor.createDiffEditor(container, options);
   }
 
+  function createLifecycle(monacoApi, diffEditor, container, scheduleLayout) {
+    const originalModel = monacoApi.editor.createModel("", "plaintext");
+    const modifiedModel = monacoApi.editor.createModel("", "plaintext");
+    diffEditor.setModel({ original: originalModel, modified: modifiedModel });
+
+    function setContents(originalContent, modifiedContent, language) {
+      // Keep model identity stable. Recreating models for every lazy-load state
+      // forces Monaco to rebuild tokenization, diff workers, and editor state.
+      if (originalModel.getLanguageId() !== language) monacoApi.editor.setModelLanguage(originalModel, language);
+      if (modifiedModel.getLanguageId() !== language) monacoApi.editor.setModelLanguage(modifiedModel, language);
+      if (originalModel.getValue() !== originalContent) originalModel.setValue(originalContent);
+      if (modifiedModel.getValue() !== modifiedContent) modifiedModel.setValue(modifiedContent);
+    }
+
+    function layout() {
+      const width = container.clientWidth;
+      const height = container.clientHeight;
+      if (width > 0 && height > 0) diffEditor.layout({ width, height });
+    }
+
+    function dispose() {
+      originalModel.dispose();
+      modifiedModel.dispose();
+    }
+
+    return { dispose, layout, scheduleLayout, setContents };
+  }
+
   function inferLanguage(path) {
     if (!path) return "plaintext";
     const lower = path.toLowerCase();
@@ -46,6 +74,7 @@
     configureLoader,
     defineTheme,
     createDiffEditor,
+    createLifecycle,
     inferLanguage,
   };
 })();

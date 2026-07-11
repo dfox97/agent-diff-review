@@ -76,8 +76,7 @@ windowTitleEl.textContent = "Review";
 
 let monacoApi = null;
 let diffEditor = null;
-let originalModel = null;
-let modifiedModel = null;
+let editorLifecycle = null;
 let originalDecorations = [];
 let modifiedDecorations = [];
 let activeViewZones = [];
@@ -180,12 +179,10 @@ function restoreScrollState(scrollState) {
   modifiedEditor.setScrollLeft(scrollState.modifiedLeft);
 }
 
-function layoutEditor() {
-  if (!diffEditor) return;
-  const width = editorContainerEl.clientWidth;
-  const height = editorContainerEl.clientHeight;
-  if (width <= 0 || height <= 0) return;
-  diffEditor.layout({ width, height });
+const layoutScheduler = window.DiffReviewRuntime.createLayoutScheduler(() => editorLifecycle?.layout());
+
+function scheduleEditorLayout(afterLayout) {
+  layoutScheduler.schedule(afterLayout);
 }
 
 function clearViewZones() {
@@ -322,16 +319,19 @@ function setupMonaco() {
     createGlyphHoverActions(diffEditor.getOriginalEditor(), "original");
     createGlyphHoverActions(diffEditor.getModifiedEditor(), "modified");
 
+    editorLifecycle = ReviewMonaco.createLifecycle(
+      monacoApi,
+      diffEditor,
+      editorContainerEl,
+      scheduleEditorLayout,
+    );
+
     if (typeof ResizeObserver !== "undefined") {
-      editorResizeObserver = new ResizeObserver(() => layoutEditor());
+      editorResizeObserver = new ResizeObserver(scheduleEditorLayout);
       editorResizeObserver.observe(editorContainerEl);
     }
 
-    requestAnimationFrame(() => {
-      layoutEditor();
-      setTimeout(layoutEditor, 50);
-      setTimeout(layoutEditor, 150);
-    });
+    scheduleEditorLayout();
 
     if (state.filesReceived) mountFile();
   });
@@ -511,15 +511,11 @@ function mountFile(options = {}) {
   if (!file) {
     currentFileLabelEl.textContent = "No file selected";
     clearViewZones();
-    if (originalModel) originalModel.dispose();
-    if (modifiedModel) modifiedModel.dispose();
-    originalModel = monacoApi.editor.createModel("", "plaintext");
-    modifiedModel = monacoApi.editor.createModel("", "plaintext");
-    diffEditor.setModel({ original: originalModel, modified: modifiedModel });
+    editorLifecycle.setContents("", "", "plaintext");
     applyEditorOptions();
     updateDecorations();
     renderFileComments();
-    requestAnimationFrame(layoutEditor);
+    scheduleEditorLayout();
     return;
   }
   ensureFileLoaded(file.id, state.currentScope);
@@ -529,24 +525,14 @@ function mountFile(options = {}) {
   const contents = getMountedContents(file, state.currentScope);
   clearViewZones();
   currentFileLabelEl.textContent = getScopeDisplayPath(file, state.currentScope);
-  if (originalModel) originalModel.dispose();
-  if (modifiedModel) modifiedModel.dispose();
-  originalModel = monacoApi.editor.createModel(contents.originalContent, language);
-  modifiedModel = monacoApi.editor.createModel(contents.modifiedContent, language);
-  diffEditor.setModel({ original: originalModel, modified: modifiedModel });
+  editorLifecycle.setContents(contents.originalContent, contents.modifiedContent, language);
   applyEditorOptions();
   syncViewZones();
   updateDecorations();
   renderFileComments();
-  requestAnimationFrame(() => {
-    layoutEditor();
+  scheduleEditorLayout(() => {
     if (options.restoreFileScroll) restoreFileScrollPosition();
     if (options.preserveScroll) restoreScrollState(scrollState);
-    setTimeout(() => {
-      layoutEditor();
-      if (options.restoreFileScroll) restoreFileScrollPosition();
-      if (options.preserveScroll) restoreScrollState(scrollState);
-    }, 50);
   });
 }
 
@@ -571,10 +557,7 @@ function renderAll(options = {}) {
   submitButton.disabled = false;
   if (diffEditor && monacoApi) {
     mountFile(options);
-    requestAnimationFrame(() => {
-      layoutEditor();
-      setTimeout(layoutEditor, 50);
-    });
+    scheduleEditorLayout();
   } else {
     renderFileComments();
   }
@@ -588,63 +571,21 @@ function chooseInitialScope() {
   return "all-files";
 }
 
-window.__reviewReceive = function (message) {
-  if (!message || typeof message !== "object") return;
-
-  if (message.type === "init") {
-    reviewData.repoRoot = message.repoRoot || "";
-    reviewData.baseBranch = message.baseBranch;
-    reviewData.mergeBase = message.mergeBase;
-    repoRootEl.textContent = reviewData.repoRoot;
-    return;
-  }
-
-  if (message.type === "files") {
-    reviewData.files = message.files || [];
-    reviewData.commits = message.commits || [];
-    state.filesReceived = true;
-    state.selectedCommitSha = reviewData.commits[0]?.sha || null;
-    state.currentScope = chooseInitialScope();
-    if (loadingOverlayEl) loadingOverlayEl.classList.add("hidden");
-    populateCommitSelect();
-    ensureActiveFileForScope();
-    renderTree();
-    renderFileComments();
-    updateSidebarLayout();
-    if (diffEditor && monacoApi) {
-      mountFile({ restoreFileScroll: true });
-      const file = activeFile();
-      if (file) ensureFileLoaded(file.id, state.currentScope);
-    }
-    return;
-  }
-
-  // file-data / file-error
-  const key = cacheKey(message.scope, message.fileId, message.commitSha);
-
-  if (message.type === "file-data") {
-    state.fileContents[key] = {
-      originalContent: message.originalContent,
-      modifiedContent: message.modifiedContent,
-    };
-    delete state.fileErrors[key];
-    delete state.pendingRequestIds[key];
-    renderTree();
-    if (state.activeFileId === message.fileId && state.currentScope === message.scope && (message.scope !== "commit" || message.commitSha === state.selectedCommitSha)) {
-      mountFile({ restoreFileScroll: true });
-    }
-    return;
-  }
-
-  if (message.type === "file-error") {
-    state.fileErrors[key] = message.message || "Unknown error";
-    delete state.pendingRequestIds[key];
-    renderTree();
-    if (state.activeFileId === message.fileId && state.currentScope === message.scope && (message.scope !== "commit" || message.commitSha === state.selectedCommitSha)) {
-      mountFile({ preserveScroll: false });
-    }
-  }
-};
+window.__reviewReceive = window.DiffReviewMessages.createReviewMessageHandler({
+  reviewData,
+  state,
+  elements: { repoRoot: repoRootEl, loadingOverlay: loadingOverlayEl },
+  cacheKey,
+  activeFile,
+  ensureActiveFileForScope,
+  populateCommitSelect,
+  renderTree,
+  renderFileComments,
+  updateSidebarLayout,
+  mountFile,
+  chooseInitialScope,
+  ensureFileLoaded,
+});
 
 
 function switchScope(scope) {
@@ -681,17 +622,14 @@ toggleUnchangedButton.addEventListener("click", () => {
   state.hideUnchanged = !state.hideUnchanged;
   applyEditorOptions();
   updateToggleButtons();
-  requestAnimationFrame(layoutEditor);
+  scheduleEditorLayout();
 });
 
 toggleWrapButton.addEventListener("click", () => {
   state.wrapLines = !state.wrapLines;
   applyEditorOptions();
   updateToggleButtons();
-  requestAnimationFrame(() => {
-    layoutEditor();
-    setTimeout(layoutEditor, 50);
-  });
+  scheduleEditorLayout();
 });
 
 toggleReviewedButton.addEventListener("click", () => {
@@ -720,10 +658,7 @@ scopeAllButton.addEventListener("click", () => switchScope("all-files"));
 toggleSidebarButton.addEventListener("click", () => {
   state.sidebarCollapsed = !state.sidebarCollapsed;
   updateSidebarLayout();
-  requestAnimationFrame(() => {
-    layoutEditor();
-    setTimeout(layoutEditor, 50);
-  });
+  scheduleEditorLayout();
 });
 
 sidebarSearchInputEl.addEventListener("input", () => {

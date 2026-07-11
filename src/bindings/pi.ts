@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { reportBestEffortError } from "../log.js";
 import { Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 import {
 	composeReviewPrompt,
@@ -79,7 +80,9 @@ export default function (pi: ExtensionAPI) {
 		activeHandle = null;
 		try {
 			handle.close();
-		} catch {}
+		} catch (error) {
+			reportBestEffortError("closing active pi review window", error);
+		}
 	}
 
 	async function review(ctx: ExtensionCommandContext, baseBranch?: string): Promise<void> {

@@ -1,4 +1,5 @@
 import { open, type GlimpseOpenOptions, type GlimpseWindow } from "../../platform/wsl-glimpse.js";
+import { reportBestEffortError } from "../../log.js";
 import { resolveLoadFilePath } from "../../platform/resolve-web-dir.js";
 import { getReviewWindowData } from "../git/index.js";
 import { ReviewFileContentCache } from "../git/contents.js";
@@ -145,7 +146,9 @@ function openWindowInternal(
 			fail(err instanceof Error ? err : new Error(String(err)));
 			try {
 				window.close();
-			} catch {}
+			} catch (closeError) {
+				reportBestEffortError("closing window after data failure", closeError);
+			}
 		});
 
 		const onReady = (): void => {
@@ -179,7 +182,9 @@ function openWindowInternal(
 				fail(err instanceof Error ? err : new Error(String(err)));
 				try {
 					window.close();
-				} catch {}
+				} catch (closeError) {
+					reportBestEffortError("closing window after initialization failure", closeError);
+				}
 			}
 		};
 
@@ -247,7 +252,9 @@ function openWindowInternal(
 			// backends this is a no-op.
 			try {
 				(window as { minimize?: () => void }).minimize?.();
-			} catch {}
+			} catch (minimizeError) {
+				reportBestEffortError("minimizing review window", minimizeError);
+			}
 		};
 
 		const prefetchNext = (
@@ -303,7 +310,9 @@ function openWindowInternal(
 		close: () => {
 			try {
 				window.close();
-			} catch {}
+			} catch (closeError) {
+				reportBestEffortError("closing review window", closeError);
+			}
 		},
 	};
 }

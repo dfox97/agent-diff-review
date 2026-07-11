@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { open as nativeOpen } from "glimpseui";
+import { reportBestEffortError } from "../log.js";
 
 export type { GlimpseInfo, GlimpseOpenOptions, GlimpseWindow } from "glimpseui";
 
@@ -29,7 +30,9 @@ export function isWSL(): boolean {
       wslDetected = true;
       return wslDetected;
     }
-  } catch {}
+  } catch (error) {
+    reportBestEffortError("reading /proc/version for WSL detection", error);
+  }
 
   wslDetected = false;
   return wslDetected;
@@ -197,7 +200,9 @@ function makeWindowsTempDir(): string {
   const base = "/mnt/c/temp";
   try {
     mkdirSync(base, { recursive: true });
-  } catch {}
+  } catch (error) {
+    reportBestEffortError("creating Windows temporary base directory", error);
+  }
 
   const dir = `${base}/pi-diff-review-wsl-${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
   try {
@@ -212,7 +217,9 @@ function makeWindowsTempDir(): string {
 function cleanupWindowsTempDir(dir: string): void {
   try {
     rmSync(dir, { recursive: true, force: true });
-  } catch {}
+  } catch (error) {
+    reportBestEffortError(`removing Windows temporary directory ${dir}`, error);
+  }
 }
 
 function buildHostScript(glimpsePath: string): string {
@@ -266,11 +273,15 @@ rl.on('line', (line) => {
       case 'followCursor': win.followCursor(msg.enabled, msg.anchor, msg.mode); break;
       default: break;
     }
-  } catch {}
+  } catch (error) {
+    process.stderr.write('[diff-review] invalid host command: ' + String(error) + '\\n');
+  }
 });
 
 process.stdin.on('end', () => {
-  try { win.close(); } catch {}
+  try { win.close(); } catch (error) {
+    process.stderr.write('[diff-review] failed to close host window: ' + String(error) + '\\n');
+  }
 });
 `;
 }
@@ -338,7 +349,9 @@ class WSLGlimpseWindow extends EventEmitter {
       this.#closed = true;
       try {
         this.#proc.stdin.end();
-      } catch {}
+      } catch (error) {
+        reportBestEffortError("closing Windows host stdin", error);
+      }
       cleanupWindowsTempDir(this.#tempDir);
     }
   }
@@ -438,7 +451,9 @@ function findCachedChromium(): string | null {
     const latest = revisions.sort().pop()!;
     const chromePath = join(cacheDir, latest, "chrome-linux", "chrome");
     if (existsSync(chromePath)) return chromePath;
-  } catch {}
+  } catch (error) {
+    reportBestEffortError("finding cached Chromium", error);
+  }
 
   return null;
 }

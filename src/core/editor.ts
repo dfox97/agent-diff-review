@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, writeFileSync, chmodSync, unlinkSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { isWSL } from "../platform/wsl-glimpse.js";
+import { reportBestEffortError } from "../log.js";
 
 /**
  * Open a worktree file in Neovim (or `$EDITOR`).
@@ -154,7 +155,9 @@ exec ${shellQuote(editor)}${lineArg ? ` ${lineArg}` : ""} ${shellQuote(absPath)}
 	const scriptDir = join(tmp, "pi-diff-review");
 	try {
 		mkdirSync(scriptDir, { recursive: true });
-	} catch {}
+	} catch (error) {
+		reportBestEffortError("creating editor launcher directory", error);
+	}
 	const scriptPath = join(
 		scriptDir,
 		`open-nvim-${process.pid}-${Math.random().toString(36).slice(2, 10)}.sh`,
@@ -162,7 +165,9 @@ exec ${shellQuote(editor)}${lineArg ? ` ${lineArg}` : ""} ${shellQuote(absPath)}
 	writeFileSync(scriptPath, script, "utf8");
 	try {
 		chmodSync(scriptPath, 0o755);
-	} catch {}
+	} catch (error) {
+		reportBestEffortError("making editor launcher executable", error);
+	}
 	return scriptPath;
 }
 
@@ -171,7 +176,9 @@ function launchWSL(scriptPath: string): void {
 	try {
 		const result = spawnSync("cmd.exe", ["/c", "where", "wt.exe"], { stdio: "ignore" });
 		hasWt = result.status === 0;
-	} catch {}
+	} catch (error) {
+		reportBestEffortError("detecting Windows Terminal", error);
+	}
 
 	if (hasWt) {
 		const distro = process.env.WSL_DISTRO_NAME;
@@ -248,7 +255,9 @@ export function openInEditor(options: OpenEditorOptions): void {
 	setTimeout(() => {
 		try {
 			unlinkSync(scriptPath);
-		} catch {}
+		} catch (error) {
+			reportBestEffortError("removing editor launcher script", error);
+		}
 	}, 60_000);
 
 	if (isWSL()) {
