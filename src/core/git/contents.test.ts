@@ -2,7 +2,7 @@ import { mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { loadReviewFileContents } from "./contents.js";
+import { loadReviewFileContents, ReviewFileContentCache } from "./contents.js";
 import type { Exec } from "./types.js";
 import type { ReviewFile } from "../types.js";
 
@@ -49,5 +49,33 @@ describe("loadReviewFileContents all-files working tree reads", () => {
 		await writeFile(join(repo, "large.txt"), "x".repeat(1_000_001));
 		const result = await loadReviewFileContents(exec, repo, file("large.txt"), "all-files");
 		expect(result.originalContent).toBe("[large.txt omitted from review: file is larger than 1000000 bytes]");
+	});
+});
+
+describe("ReviewFileContentCache", () => {
+	it("does not permanently cache a rejected load", async () => {
+		const reviewFile = file("a.txt");
+		reviewFile.inLastCommit = true;
+		reviewFile.lastCommit = {
+			status: "modified",
+			oldPath: "a.txt",
+			newPath: null,
+			displayPath: "a.txt",
+			hasOriginal: true,
+			hasModified: false,
+		};
+		let calls = 0;
+		const retryingExec: Exec = async () => {
+			calls += 1;
+			if (calls === 1) throw new Error("temporary failure");
+			return { code: 0, stdout: calls === 2 ? "5\n" : "hello", stderr: "" };
+		};
+		const cache = new ReviewFileContentCache(retryingExec, "/repo", undefined);
+
+		await expect(cache.get(reviewFile, "last-commit")).rejects.toThrow("temporary failure");
+		await expect(cache.get(reviewFile, "last-commit")).resolves.toEqual({
+			originalContent: "hello",
+			modifiedContent: "",
+		});
 	});
 });

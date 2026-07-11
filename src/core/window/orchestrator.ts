@@ -19,8 +19,14 @@ import type {
 	ReviewWindowMessage,
 } from "../types.js";
 
-function escapeForInlineScript(value: string): string {
-	return value.replace(/</g, "\\u003c").replace(/>/g, "\\u003e").replace(/&/g, "\\u0026");
+export function escapeForInlineScript(value: string): string {
+	// Glimpse transports eval commands through a Windows native process whose
+	// pipe may use an OEM code page. Keep the protocol ASCII-only so UTF-8 text
+	// such as em dashes cannot become mojibake (for example, `ÔÇö`). Iterating
+	// UTF-16 code units also preserves astral characters as surrogate escapes.
+	return value.replace(/[^\x20-\x7e]|[<>&]/g, (character) =>
+		`\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
+	);
 }
 
 export interface OpenReviewWindowOptions {
@@ -178,9 +184,8 @@ function openWindowInternal(
 		};
 
 		const handleRequestFile = async (message: ReviewRequestFilePayload): Promise<void> => {
-			let data: ReviewWindowData;
 			try {
-				data = await dataHandled;
+				await dataHandled;
 			} catch {
 				return; // gather failed; failure already propagated via result.
 			}
@@ -207,7 +212,7 @@ function openWindowInternal(
 					originalContent: contents.originalContent,
 					modifiedContent: contents.modifiedContent,
 				});
-				prefetchNext(data, file, message.scope, message.commitSha);
+				prefetchNext(file, message.scope, message.commitSha);
 			} catch (err) {
 				const messageText = err instanceof Error ? err.message : String(err);
 				send({
@@ -246,13 +251,12 @@ function openWindowInternal(
 		};
 
 		const prefetchNext = (
-			data: ReviewWindowData,
 			file: ReviewFile,
 			scope: ReviewScope,
 			commitSha: string | undefined,
 		): void => {
-			if (cache == null) return;
-			const list = scopedFilesFor(data, scope, commitSha);
+			if (cache == null || dataResolved == null) return;
+			const list = scopedFilesFor(dataResolved, scope, commitSha);
 			const index = list.findIndex((entry) => entry.id === file.id);
 			if (index < 0 || index + 1 >= list.length) return;
 			cache.prefetch(list[index + 1], scope, commitSha);

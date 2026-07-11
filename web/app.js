@@ -620,10 +620,7 @@ window.__reviewReceive = function (message) {
   }
 
   // file-data / file-error
-  const previousSelectedCommitSha = state.selectedCommitSha;
-  if (message.scope === "commit" && message.commitSha) state.selectedCommitSha = message.commitSha;
-  const key = cacheKey(message.scope, message.fileId);
-  state.selectedCommitSha = previousSelectedCommitSha;
+  const key = cacheKey(message.scope, message.fileId, message.commitSha);
 
   if (message.type === "file-data") {
     state.fileContents[key] = {

@@ -111,12 +111,12 @@
         .map((entry) => entry.file);
     }
 
-    function scopeInstanceKey(scope) {
-      return scope === "commit" ? `${scope}:${state.selectedCommitSha || ""}` : scope;
+    function scopeInstanceKey(scope, commitSha = state.selectedCommitSha) {
+      return scope === "commit" ? `${scope}:${commitSha || ""}` : scope;
     }
 
-    function cacheKey(scope, fileId) {
-      return `${scopeInstanceKey(scope)}:${fileId}`;
+    function cacheKey(scope, fileId, commitSha) {
+      return `${scopeInstanceKey(scope, commitSha)}:${fileId}`;
     }
 
     function scrollKey(scope, fileId) {

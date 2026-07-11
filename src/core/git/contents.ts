@@ -127,6 +127,11 @@ export class ReviewFileContentCache {
 		}
 		const pending = loadReviewFileContents(this.exec, this.repoRoot, file, scope, commitSha, this.mergeBase);
 		this.entries.set(key, pending);
+		// Failed reads must be retryable. Only remove this exact promise: a newer
+		// request may already have replaced it by the time the rejection runs.
+		void pending.catch(() => {
+			if (this.entries.get(key) === pending) this.entries.delete(key);
+		});
 		this.evictIfNeeded();
 		return pending;
 	}
@@ -135,11 +140,9 @@ export class ReviewFileContentCache {
 	prefetch(file: ReviewFile, scope: ReviewScope, commitSha?: string): void {
 		const key = cacheKey(scope, commitSha, file.id);
 		if (this.entries.has(key)) return;
-		try {
-			void this.get(file, scope, commitSha);
-		} catch {
-			// Prefetch is best-effort; never surface errors.
-		}
+		// Promise rejections are asynchronous, so a synchronous try/catch cannot
+		// make prefetch best-effort. Attach an explicit rejection handler.
+		void this.get(file, scope, commitSha).catch(() => {});
 	}
 
 	private evictIfNeeded(): void {
