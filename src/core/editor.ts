@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync, chmodSync, unlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { isWSL } from "../platform/wsl-glimpse.js";
 import { reportBestEffortError } from "../log.js";
 
@@ -14,7 +14,9 @@ import { reportBestEffortError } from "../log.js";
  *
  *   1. `DIFF_REVIEW_EDITOR_CMD` - a custom shell command string with `%file`
  *      and `%line` placeholders. Total escape hatch.
- *   2. tmux, when `$TMUX` is set and the `tmux` binary is on `PATH`. The host
+ *   2. Herdr, when the host inherited a Herdr pane or a pane for the review
+ *      repository can be found. The editor opens in a sibling pane.
+ *   3. tmux, when `$TMUX` is set and the `tmux` binary is on `PATH`. The host
  *      process inherits the user's tmux socket, so the editor opens inside the
  *      user's *current* tmux session - no separate terminal emulator needed,
  *      works identically on WSL2 and native Linux. This is the common case
@@ -22,9 +24,10 @@ import { reportBestEffortError } from "../log.js";
  *      window (`tmux split-window`) so the editor appears next to pi; set
  *      `DIFF_REVIEW_TMUX_MODE=popup` for a floating overlay or `=window` for
  *      a separate tmux window.
- *   3. WSL2 without tmux -> Windows Terminal (`wt.exe`) running `wsl bash ...`.
- *   4. macOS without tmux -> Terminal.app via `osascript`.
- *   5. Linux without tmux -> first available terminal emulator.
+ *   4. WSL2 without a multiplexer -> Windows Terminal (`wt.exe`) running
+ *      `wsl bash ...`.
+ *   5. macOS without a multiplexer -> Terminal.app via `osascript`.
+ *   6. Linux without a multiplexer -> first available terminal emulator.
  *
  * Override the editor binary with `DIFF_REVIEW_EDITOR` / `PI_DIFF_REVIEW_EDITOR`
  * / `EDITOR` (defaults to `nvim`).
@@ -81,6 +84,112 @@ function launchWithCustomTemplate(template: string, absPath: string, line: numbe
 		.replace(/%file/g, shellQuote(absPath))
 		.replace(/%line/g, line && line > 0 ? String(line) : "");
 	spawnDetached("sh", ["-c", filled]);
+}
+
+// ---- Herdr ---------------------------------------------------------------
+
+interface HerdrSplitResponse {
+	result?: {
+		pane?: {
+			pane_id?: unknown;
+		};
+	};
+}
+
+interface HerdrPaneListResponse {
+	result?: {
+		panes?: Array<{
+			pane_id?: unknown;
+			cwd?: unknown;
+			foreground_cwd?: unknown;
+			focused?: unknown;
+		}>;
+	};
+}
+
+function findHerdrCommand(): string | undefined {
+	const configured = process.env.HERDR_BIN_PATH;
+	if (configured && existsSync(configured)) return configured;
+	if (commandExists("herdr")) return "herdr";
+
+	const localInstall = join(homedir(), ".local", "bin", "herdr");
+	return existsSync(localInstall) ? localInstall : undefined;
+}
+
+function findHerdrPane(herdrCommand: string, repoRoot: string): string | undefined {
+	const inheritedPaneId = process.env.HERDR_PANE_ID;
+	if (process.env.HERDR_ENV === "1" && inheritedPaneId) return inheritedPaneId;
+
+	const list = spawnSync(herdrCommand, ["pane", "list"], { encoding: "utf8" });
+	if (list.status !== 0) return undefined;
+
+	const response = JSON.parse(list.stdout) as HerdrPaneListResponse;
+	const root = resolve(repoRoot);
+	const matches = (response.result?.panes ?? []).filter((pane) => {
+		const cwd = typeof pane.foreground_cwd === "string" ? pane.foreground_cwd : pane.cwd;
+		return typeof pane.pane_id === "string" && typeof cwd === "string" && resolve(cwd) === root;
+	});
+	const pane = matches.find((candidate) => candidate.focused === true) ?? matches[0];
+	return typeof pane?.pane_id === "string" ? pane.pane_id : undefined;
+}
+
+/** Open the editor in a sibling pane in the calling Herdr tab. */
+function launchHerdr(
+	editor: string,
+	repoRoot: string,
+	absPath: string,
+	line: number | undefined,
+): boolean {
+	const inheritedHerdr = process.env.HERDR_ENV === "1";
+	const herdrCommand = findHerdrCommand();
+	if (!herdrCommand) {
+		if (inheritedHerdr) {
+			console.error("[diff-review] Herdr is active but its CLI could not be found.");
+			return true;
+		}
+		return false;
+	}
+
+	try {
+		const sourcePaneId = findHerdrPane(herdrCommand, repoRoot);
+		if (!sourcePaneId) {
+			if (inheritedHerdr) {
+				console.error("[diff-review] Herdr could not identify the pane that opened this review.");
+				return true;
+			}
+			return false;
+		}
+
+		const split = spawnSync(
+			herdrCommand,
+			["pane", "split", sourcePaneId, "--direction", "right", "--cwd", dirname(absPath), "--focus"],
+			{ encoding: "utf8" },
+		);
+		if (split.status !== 0) {
+			console.error(`[diff-review] Herdr could not create an editor pane: ${split.stderr.trim()}`);
+			return true;
+		}
+
+		const response = JSON.parse(split.stdout) as HerdrSplitResponse;
+		const paneId = response.result?.pane?.pane_id;
+		if (typeof paneId !== "string" || paneId.length === 0) {
+			console.error("[diff-review] Herdr created a pane but did not return its pane ID.");
+			return true;
+		}
+
+		const lineArg = line && line > 0 ? ` +${line}` : "";
+		const command = `exec ${shellQuote(editor)}${lineArg} ${shellQuote(absPath)}`;
+		const run = spawnSync(herdrCommand, ["pane", "run", paneId, command], {
+			encoding: "utf8",
+		});
+		if (run.status !== 0) {
+			console.error(`[diff-review] Herdr could not start the editor: ${run.stderr.trim()}`);
+		}
+	} catch (error) {
+		reportBestEffortError("opening editor in Herdr", error);
+	}
+
+	return true;
 }
 
 // ---- tmux -----------------------------------------------------------------
@@ -245,9 +354,11 @@ export function openInEditor(options: OpenEditorOptions): void {
 		return;
 	}
 
-	// Preferred path: tmux. The agent host process inherits the user's tmux
-	// socket via $TMUX, so this opens the editor in the user's actual session
-	// without needing a separate terminal emulator. Works on WSL2 too.
+	// Prefer the multiplexer that owns the agent host process, avoiding a
+	// separate terminal emulator. Herdr is checked first because it may itself
+	// be running inside tmux.
+	if (launchHerdr(editor, options.repoRoot, absPath, line)) return;
+
 	if (launchTmux(editor, absPath, line)) return;
 
 	// Fall back to a terminal-emulator launcher.
