@@ -12,6 +12,14 @@ export type { GlimpseInfo, GlimpseOpenOptions, GlimpseWindow } from "glimpseui";
 let wslDetected: boolean | null = null;
 
 export function isWSL(): boolean {
+  // Docker Desktop on WSL shares the host's Microsoft kernel, but containers
+  // cannot use WSL's Windows executable interop. Treat containers as native
+  // Linux so Glimpse uses its Chromium backend through the forwarded display.
+  if (existsSync("/.dockerenv") || process.env.container != null) {
+    wslDetected = false;
+    return wslDetected;
+  }
+
   if (wslDetected != null) return wslDetected;
 
   if (process.platform !== "linux") {
