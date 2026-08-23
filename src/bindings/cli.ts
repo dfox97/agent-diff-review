@@ -31,11 +31,11 @@ import {
 
 function execWithStdin(cmd: string, args: string[], stdin: string): Promise<ExecResult> {
 	return new Promise((resolve, reject) => {
-		const child = spawn(cmd, args, { stdio: ["pipe", "pipe", "pipe"] });
-		let stdout = "";
-		let stderr = "";
-		child.stdout.on("data", (data: Buffer) => { stdout += data.toString("utf8"); });
-		child.stderr.on("data", (data: Buffer) => { stderr += data.toString("utf8"); });
+		// Clipboard tools such as wl-copy and xclip fork a background process that
+		// inherits stdout/stderr. Piping those streams makes Node wait forever for
+		// EOF even though the launcher has exited, so discard them here.
+		const child = spawn(cmd, args, { stdio: ["pipe", "ignore", "ignore"] });
+		child.stdin.on("error", () => {}); // The command may exit before consuming stdin.
 		child.on("error", (err) => {
 			if ("code" in err && err.code === "ENOENT") {
 				resolve({ code: 127, stdout: "", stderr: err.message });
@@ -43,9 +43,8 @@ function execWithStdin(cmd: string, args: string[], stdin: string): Promise<Exec
 			}
 			reject(err);
 		});
-		child.on("close", (code) => resolve({ code: code ?? 0, stdout, stderr }));
-		child.stdin.write(stdin, "utf8");
-		child.stdin.end();
+		child.on("close", (code) => resolve({ code: code ?? 0, stdout: "", stderr: "" }));
+		child.stdin.end(stdin, "utf8");
 	});
 }
 

@@ -512,6 +512,32 @@ function ensureLinuxChromiumAvailable(): void {
   }
 }
 
+function openNative(
+  html: string,
+  options?: import("glimpseui").GlimpseOpenOptions,
+): import("glimpseui").GlimpseWindow {
+  if (process.platform !== "linux") return nativeOpen(html, options);
+
+  // Glimpse's Chromium fallback launches its backend with process.execPath.
+  // In pi's compiled executable that points to `pi`, not Node, so Glimpse
+  // accidentally starts `pi chromium-backend.mjs --width ...` and pi rejects
+  // the window flags. The spawn happens synchronously inside nativeOpen(), so
+  // temporarily expose the actual Node executable for that call only.
+  const nodeResult = spawnSync("which", ["node"], { encoding: "utf8" });
+  const nodePath = nodeResult.status === 0 ? nodeResult.stdout.trim() : "";
+  if (nodePath.length === 0 || nodePath === process.execPath) {
+    return nativeOpen(html, options);
+  }
+
+  const originalExecPath = process.execPath;
+  try {
+    process.execPath = nodePath;
+    return nativeOpen(html, options);
+  } finally {
+    process.execPath = originalExecPath;
+  }
+}
+
 export function open(
   html: string,
   options?: import("glimpseui").GlimpseOpenOptions,
@@ -525,5 +551,5 @@ export function open(
     ensureLinuxChromiumAvailable();
   }
 
-  return nativeOpen(html, options);
+  return openNative(html, options);
 }

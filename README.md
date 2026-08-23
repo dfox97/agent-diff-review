@@ -71,18 +71,22 @@ diff-review open --base main --out /tmp/review.md
 
 ### pi
 
-Install locally:
+Install the package locally:
 
 ```bash
 pi install .
 ```
 
-Then inside pi:
+Then start `pi` in a git repository and run:
 
 ```text
 /diff-review
 /diff-review main
 ```
+
+The optional argument is the base branch. After you finish the native review,
+the generated feedback is inserted into pi's editor without starting an LLM
+turn, so you can edit it before submitting.
 
 ### opencode
 
@@ -127,6 +131,27 @@ First WSL2 run may take 30–60 seconds while the Windows host is prepared.
 - WSL/Windows: `clip.exe` or PowerShell
 - macOS: `pbcopy`
 - Linux: `wl-copy`, `xclip`, or `xsel`
+
+### Linux/Wayland notes
+
+On Wayland, Glimpse's Chromium backend may print:
+
+```text
+[glimpse] cursor backend: Hyprland IPC (...)
+[glimpse] Could not find Chrome X11 window for mode application
+```
+
+These are diagnostic messages, not review failures. Chromium is a native
+Wayland window, so Glimpse cannot find an X11 window for optional X11-specific
+window modes. The review and clipboard still work normally.
+
+A previous implementation could hang after **Finish review** even though the
+window closed. Tools such as `wl-copy` and `xclip` fork a clipboard-owning
+background process which inherits stdout and stderr. Capturing those streams
+made Node wait indefinitely for EOF. The CLI now discards clipboard helper
+output, allowing the launcher to exit and print `Review feedback copied to
+clipboard.` Keep clipboard-helper stdout/stderr unpiped if this code is
+refactored.
 
 ## Development
 
